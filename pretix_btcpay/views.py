@@ -38,11 +38,12 @@ def webhook(request, *args, **kwargs):
     raw_body = request.body
     if len(raw_body) > MAX_BODY:
         return HttpResponse("Payload too large", status=413)
-    secret = str(prov.settings.get("webhook_secret") or "")
-    if not secret:
+    secrets_ = prov.webhook_secrets()
+    if not secrets_:
         logger.error("BTCPay: webhook for %s received but no secret configured", event_ref(request.event))
         return HttpResponse("Not configured", status=503)
-    if not BTCPayAPI.verify_signature(secret, raw_body, request.META.get("HTTP_BTCPAY_SIG")):
+    signature = request.META.get("HTTP_BTCPAY_SIG")
+    if not any(BTCPayAPI.verify_signature(s, raw_body, signature) for s in secrets_):
         logger.warning("BTCPay: webhook for %s with a bad signature", event_ref(request.event))
         return HttpResponseBadRequest("Signature mismatch")
 

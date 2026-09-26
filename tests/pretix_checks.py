@@ -18,6 +18,12 @@ from django_scopes import scope, scopes_disabled
 from pretix.base.models import Event, Order, OrderPayment
 
 from pretix_btcpay import state, sync
+from pretix_btcpay.api import BTCPayAPI
+
+# The payments on the made-up invoices: all confirmed, unless a check says otherwise.
+PAYMENTS = {}
+BTCPayAPI.get_invoice_payment_methods = lambda self, store_id, invoice_id: [
+    {"paymentMethodId": "BTC-CHAIN", "payments": [{"status": s} for s in PAYMENTS.get(invoice_id, ["Settled"])]}]
 
 ORGANIZER, EVENT = os.environ.get("CHECK_EVENT", "zitadelle/2027").split("/")
 results = []
@@ -102,6 +108,12 @@ with scope(organizer=event.organizer):
 
     print("Überzahlt, zweimal gemeldet, dann noch mehr")
     order, payment, inv = order_with_payment()
+    PAYMENTS[inv] = ["Settled", "Processing"]
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, "PaidOver", paidAmount="399.00"), "check")
+    reload(order, payment)
+    check(order.status == "p" and not order.payments.filter(state="confirmed").exclude(pk=payment.pk).exists(),
+          "zweite Zahlung noch unbestätigt: bezahlt, aber kein Überschuss gebucht")
+    PAYMENTS[inv] = ["Settled", "Settled"]
     for _ in range(2):
         sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, "PaidOver", paidAmount="399.00"), "check")
     reload(order, payment)
@@ -176,6 +188,60 @@ with scope(organizer=event.organizer):
     payment.info_data = {**payment.info_data, "status": state.SETTLED}
     payment.save(update_fields=["info"])
     check(sync.next_check(payment, now()) == 1000 + sync.CATCH_UP, "Settled, aber nicht bestätigt: bald wieder")
+
+    print("Abgeschlossen, aber nie gezählt")
+    order, payment, inv = order_with_payment()
+    OrderPayment.objects.filter(pk=payment.pk).update(created=now() - timedelta(days=10), state=OrderPayment.PAYMENT_STATE_FAILED)
+    payment.refresh_from_db()
+    payment.info_data = {**payment.info_data, "status": state.EXPIRED, "checked": 1000,
+                         "monitoring_until": int((now() - timedelta(days=9)).timestamp())}
+    payment.save(update_fields=["info"])
+    check(sync.next_check(payment, now()) == 1000 + sync.TERMINAL, "abgelaufen und alt: alle sechs Stunden, falls BTCPay sie später doch bezahlt setzt")
+
+    print("Vorgemerkter Webhook")
+    import json as _json
+    active = (provider.settings.webhook_id, provider.settings.webhook_secret)
+    provider.settings.set("pending_webhook", _json.dumps({"id": "NEU", "secret": "neu", "url": "https://anders.example", "store_id": "ANDERS"}))
+    provider.promote_webhook()
+    check((provider.settings.webhook_id, provider.settings.webhook_secret) == active and provider.settings.pending_webhook,
+          "für eine andere Adresse und einen anderen Laden: bleibt vorgemerkt, der alte gilt weiter")
+    provider.settings.set("pending_webhook", _json.dumps({"id": active[0], "secret": active[1],
+                                                         "url": str(provider.settings.url).rstrip("/"), "store_id": str(provider.settings.store_id)}))
+    provider.promote_webhook()
+    check(not provider.settings.pending_webhook and provider.settings.webhook_id == active[0], "für die gespeicherten Einstellungen: wird der aktive")
+
+    print("Erstattung ohne klare Antwort")
+    from pretix.base.models import OrderRefund
+    from pretix.base.payment import PaymentException
+    from pretix_btcpay.api import BTCPayError as _Err
+    order, payment, inv = order_with_payment()
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED), "check")
+    reload(order, payment)
+    original_refund = BTCPayAPI.refund_invoice
+    outcomes = {}
+    for label, behaviour in (("keine Antwort", _Err("timeout")), ("Serverfehler", _Err("boom", status=502)),
+                             ("fremder Link", {"id": "PP1", "viewLink": "https://evil.example/pp"}),
+                             ("abgelehnt", _Err("bad", status=400))):
+        def fake_refund(self, *a, _b=behaviour, **kw):
+            if isinstance(_b, Exception):
+                raise _b
+            return _b
+        BTCPayAPI.refund_invoice = fake_refund
+        refund = order.refunds.create(payment=payment, source=OrderRefund.REFUND_SOURCE_ADMIN, state=OrderRefund.REFUND_STATE_CREATED,
+                                      amount=Decimal("10.00"), provider=sync.PROVIDER)
+        try:
+            provider.execute_refund(refund)
+            refund.refresh_from_db()
+            outcomes[label] = (refund.state, bool(refund.info_data.get("ambiguous")))
+        except PaymentException:
+            refund.refresh_from_db()
+            outcomes[label] = ("abgelehnt", bool(refund.info_data.get("ambiguous")))
+        refund.state = OrderRefund.REFUND_STATE_FAILED
+        refund.save(update_fields=["state"])
+    BTCPayAPI.refund_invoice = original_refund
+    check(all(outcomes[k] == ("transit", True) for k in ("keine Antwort", "Serverfehler", "fremder Link")),
+          f"ohne klare Antwort: in Arbeit, für einen Menschen markiert ({outcomes})")
+    check(outcomes["abgelehnt"] == ("abgelehnt", False), "von BTCPay abgelehnt: sauber gescheitert, nichts angelegt")
 
     print("Abgleich bei 500 offenen Zahlungen")
     from pretix_btcpay.api import BTCPayAPI, BTCPayError

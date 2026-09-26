@@ -1,9 +1,11 @@
+import json
 import logging
 import secrets
 from collections import OrderedDict
 from urllib.parse import urlparse
 
 from django import forms
+from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -64,19 +66,24 @@ class BTCPayServer(BasePaymentProvider):
 
     # Setup
 
-    def ensure_webhook(self, client: BTCPayAPI | None = None, store_id: str | None = None, fresh: bool = False) -> str:
+    def ensure_webhook(self, client: BTCPayAPI | None = None, store_id: str | None = None, fresh: bool = False,
+                       stage: bool = False) -> str:
         """
         Make sure the store has our webhook, with a secret we know. The secret is ours (BTCPay accepts it on create and
         update), so an existing webhook is updated instead of deleted and recreated. One registration at a time per
         event, through a short lease in the cache and not a database lock, so nothing waits on BTCPay while holding
-        rows. ``fresh`` ignores the stored id and secret (a new URL or store) and only stores the new ones on success.
-        Raises WebhookBusy if another request holds the lease.
+        rows. ``fresh`` ignores the stored id and secret (a new URL or store) and only stores the new ones on success;
+        with ``stage`` they are only noted for that URL and store, and become active once the settings really use
+        them (a settings form that fails elsewhere must not break the working webhook). Raises WebhookBusy if another
+        request holds the lease.
         """
         client = client or self.client
         store_id = str(store_id or self.settings.store_id)
         lease = f"pretix_btcpay_webhook_{self.event.pk}"
         token = secrets.token_hex(8)
-        if not cache.add(lease, token, timeout=120):
+        # Only a shared cache (Redis, memcached) makes this a lease across workers; pretix' dummy cache accepts every
+        # add. Registration only runs when the settings are saved, so without one it is still one request at a time.
+        if getattr(settings, "REAL_CACHE_USED", False) and not cache.add(lease, token, timeout=120):
             raise WebhookBusy()
         try:
             self.event.settings.flush()
@@ -102,13 +109,37 @@ class BTCPayServer(BasePaymentProvider):
             else:
                 result = client.create_webhook(store_id, url=self.webhook_url, secret=secret, events=WEBHOOK_EVENTS)
             # Both at once, and only now: a failure above leaves the working webhook alone.
-            self.settings.set("webhook_id", result["id"])
-            self.settings.set("webhook_secret", secret)
+            if stage:
+                self.settings.set("pending_webhook", json.dumps({"id": result["id"], "secret": secret,
+                                                                 "url": client.url, "store_id": store_id}))
+            else:
+                self.settings.set("webhook_id", result["id"])
+                self.settings.set("webhook_secret", secret)
             self.event.log_action("pretix_btcpay.webhook.registered", data={"webhook_id": result["id"], "url": self.webhook_url})
             return result["id"]
         finally:
             if cache.get(lease) == token:
                 cache.delete(lease)
+
+    def promote_webhook(self) -> None:
+        """Make a staged webhook the active one once URL and store in the saved settings are the ones it was made for."""
+        raw = self.settings.get("pending_webhook")
+        if not raw:
+            return
+        try:
+            pending = json.loads(raw)
+        except ValueError:
+            del self.settings["pending_webhook"]
+            return
+        if (pending.get("url"), pending.get("store_id")) == (str(self.settings.url or "").rstrip("/"), str(self.settings.store_id or "")):
+            self.settings.set("webhook_id", pending["id"])
+            self.settings.set("webhook_secret", pending["secret"])
+            del self.settings["pending_webhook"]
+
+    def webhook_secrets(self) -> list[str]:
+        """The secret to check webhooks with; a staged webhook for the saved URL and store is promoted first."""
+        self.promote_webhook()
+        return [s for s in [str(self.settings.webhook_secret or "")] if s]
 
     @property
     def settings_form_fields(self):
@@ -187,7 +218,7 @@ class BTCPayServer(BasePaymentProvider):
         # Register the webhook now, not at the first sale; this also proves store and key fit together.
         fresh = (str(self.settings.url or ""), str(self.settings.store_id or "")) != (str(url), str(store_id))
         try:
-            self.ensure_webhook(client, str(store_id), fresh=fresh)
+            self.ensure_webhook(client, str(store_id), fresh=fresh, stage=fresh)
         except WebhookBusy:
             raise ValidationError(_("The webhook is being registered right now. Please save again in a minute."))
         except BTCPayError:
@@ -195,6 +226,7 @@ class BTCPayServer(BasePaymentProvider):
         return cleaned_data
 
     def settings_content_render(self, request) -> str:
+        self.promote_webhook()
         return get_template("pretix_btcpay/settings.html").render({
             "webhook_url": self.webhook_url,
             "webhook_id": self.settings.webhook_id,
@@ -245,13 +277,11 @@ class BTCPayServer(BasePaymentProvider):
         payment (a double click, two tabs), so a payment never gets two invoices. A payment whose invoice ran out is
         not continued: pretix then starts a new payment, with a new invoice.
         """
+        self.promote_webhook()
         if not self.settings.webhook_id or not self.settings.webhook_secret:
-            try:
-                self.ensure_webhook()
-            except WebhookBusy:
-                pass  # registered by someone else right now; the poll covers anything it misses
-            except BTCPayError:
-                logger.exception("BTCPay: webhook for %s could not be registered", event_ref(self.event))
+            # Registered when the settings are saved, never here: a rush of first buyers must not race for it. Without
+            # a webhook the poll still picks every payment up, only a minute later.
+            logger.error("BTCPay: no webhook registered for %s; save the payment settings once", event_ref(self.event))
         try:
             if payment.info_data.get("invoice_id"):
                 sync_payment(self, payment, "checkout")
@@ -386,26 +416,34 @@ class BTCPayServer(BasePaymentProvider):
         if not invoice_id:
             raise PaymentException(_("This payment has no BTCPay invoice to refund."))
         name = f"pretix {self.event.slug} {refund.order.code} R{refund.local_id} #{refund.pk}"
+        # Note the intent first: if anything goes wrong after the request left, BTCPay may have created the claim.
+        refund.info_data = {"name": name, "in_flight": True}
+        refund.save(update_fields=["info"])
+
+        def ambiguous():
+            refund.info_data = {"ambiguous": True, "name": name}
+            refund.state = OrderRefund.REFUND_STATE_TRANSIT
+            refund.save(update_fields=["info", "state"])
+            refund.order.log_action("pretix_btcpay.refund.ambiguous", data={"local_id": refund.local_id, "name": name})
+
         try:
             pull = self.client.refund_invoice(
                 str(self.settings.store_id), invoice_id, amount=str(refund.amount), currency=str(self.event.currency),
                 name=name, description=str(_("Refund for order {code}")).format(code=refund.order.code),
             )
         except BTCPayError as e:
-            if e.status is None or e.status >= 500:
-                # No answer: BTCPay may have created it anyway. Do not let anyone retry blindly.
-                refund.info_data = {"ambiguous": True, "name": name}
-                refund.state = OrderRefund.REFUND_STATE_TRANSIT
-                refund.save(update_fields=["info", "state"])
-                refund.order.log_action("pretix_btcpay.refund.ambiguous", data={"local_id": refund.local_id, "name": name})
-                return
-            if e.status == 403:
-                raise PaymentException(_("The API key is not allowed to create refunds "
-                                         "(btcpay.store.cancreatenonapprovedpullpayments)."))
-            raise PaymentException(_("BTCPay Server could not create the refund: please do it in BTCPay."))
+            if e.status is not None and 400 <= e.status < 500 and e.status != 408:
+                # BTCPay refused: nothing was created.
+                refund.info_data = {"name": name}
+                refund.save(update_fields=["info"])
+                if e.status == 403:
+                    raise PaymentException(_("The API key is not allowed to create refunds "
+                                             "(btcpay.store.cancreatenonapprovedpullpayments)."))
+                raise PaymentException(_("BTCPay Server could not create the refund: please do it in BTCPay."))
+            return ambiguous()  # no answer, a server error or an unreadable one: it may exist
         link = pull.get("viewLink") or ""
-        if not is_own_link(self.client.url, link):
-            raise PaymentException(_("Unexpected answer from BTCPay Server."))
+        if not pull.get("id") or not is_own_link(self.client.url, link):
+            return ambiguous()
         refund.info_data = {"pull_payment_id": pull.get("id"), "claim_link": link, "name": name}
         # The buyer still has to claim it and the team to approve it in BTCPay; it is done once BTCPay paid it out.
         refund.state = OrderRefund.REFUND_STATE_TRANSIT

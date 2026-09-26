@@ -35,8 +35,9 @@ PROVIDER = "btcpay_greenfield"
 DEFAULT_MONITORING = timedelta(hours=24)
 # How often the poll looks again: open invoices every run, final ones pretix has not caught up with every few minutes,
 # settled and closed ones now and then while BTCPay still watches them (late money, admin changes, lost webhooks).
-ACTIVE, CATCH_UP, WATCH = 60, 300, 1800
-WINDOW = timedelta(days=7)
+ACTIVE, CATCH_UP, WATCH, TERMINAL = 60, 300, 1800, 6 * 3600
+# Which payments the poll looks at at all; next_check decides which of them are due. Long enough for the whole sale.
+WINDOW = timedelta(days=180)
 
 
 class InvoiceMismatch(Exception):
@@ -162,14 +163,14 @@ def _mark_pending(payment: OrderPayment) -> None:
     payment.refresh_from_db()
 
 
-def _order_paid_enough(order: Order) -> bool:
+def _net_paid(order: Order) -> Decimal:
     paid = order.payments.filter(
         state__in=(OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED)
     ).aggregate(s=Sum("amount"))["s"] or Decimal("0.00")
     refunded = order.refunds.filter(
         state__in=(OrderRefund.REFUND_STATE_DONE, OrderRefund.REFUND_STATE_TRANSIT, OrderRefund.REFUND_STATE_CREATED)
     ).aggregate(s=Sum("amount"))["s"] or Decimal("0.00")
-    return paid - refunded >= order.total
+    return paid - refunded
 
 
 def _catch_up_order(payment: OrderPayment, invoice: dict) -> None:
@@ -181,15 +182,17 @@ def _catch_up_order(payment: OrderPayment, invoice: dict) -> None:
     order = Order.objects.get(pk=payment.order_id)
     if order.status not in (Order.STATUS_PENDING, Order.STATUS_EXPIRED) or payment.info_data.get("quota_exceeded"):
         return
+    if _net_paid(order) < order.total:
+        return
     try:
         with transaction.atomic():
-            # The webhook and the poll may both get here: the payment row makes them take turns, and the second one
-            # finds the order paid.
-            locked = OrderPayment.objects.select_for_update(of=OF_SELF).get(pk=payment.pk)
-            order.refresh_from_db()
-            if order.status not in (Order.STATUS_PENDING, Order.STATUS_EXPIRED) or not _order_paid_enough(order):
+            # The webhook and the poll (and another payment of the same order) may all get here: the order row makes
+            # them take turns, and the next one finds the order paid.
+            order = Order.objects.select_for_update(of=OF_SELF).get(pk=payment.order_id)
+            net = _net_paid(order)
+            if order.status not in (Order.STATUS_PENDING, Order.STATUS_EXPIRED) or net < order.total:
                 return
-            locked._mark_order_paid()
+            OrderPayment.objects.get(pk=payment.pk)._mark_order_paid(payment_refund_sum=net)
         order.log_action("pretix_btcpay.order_caught_up", data={"local_id": payment.local_id})
     except Quota.QuotaExceededException as e:
         logger.warning("BTCPay: payment %s is confirmed, but order %s can not be marked paid: %s",
@@ -198,19 +201,34 @@ def _catch_up_order(payment: OrderPayment, invoice: dict) -> None:
         _note(payment, "quota_exceeded", invoice)
 
 
-def _record_surplus(payment: OrderPayment, invoice: dict) -> None:
+def _all_confirmed(provider, invoice: dict) -> bool:
     """
-    Book money beyond the payment amount as its own confirmed payment, once per euro: pretix then shows the order as
-    overpaid, and refunding the surplus does not eat into the ticket. BTCPay reports paidAmount in the invoice
-    currency, at the rate of the invoice.
+    Whether every payment BTCPay counts on the invoice is confirmed. paidAmount includes unconfirmed transactions, and
+    one that is replaced later would leave a surplus that never arrived; refunding that would pay out money twice.
+    """
+    try:
+        methods = provider.client.get_invoice_payment_methods(str(provider.settings.store_id), invoice["id"])
+    except BTCPayError:
+        return False
+    return all(p.get("status") in ("Settled", "Invalid") for m in methods for p in (m.get("payments") or []))
+
+
+def _record_surplus(provider, payment: OrderPayment, invoice: dict) -> None:
+    """
+    Book money beyond the payment amount as its own confirmed payment, once per euro and only once it is confirmed:
+    pretix then shows the order as overpaid, and refunding the surplus does not eat into the ticket. BTCPay reports
+    paidAmount in the invoice currency, at the rate of the invoice.
     """
     surplus = _decimal(invoice.get("paidAmount")) - payment.amount
-    if surplus <= 0:
+    if surplus <= _decimal(payment.info_data.get("surplus_recorded")):
         return
+    if not _all_confirmed(provider, invoice):
+        return  # the webhook for the confirmation, or the poll, comes back for it
     if Order.objects.get(pk=payment.order_id).status != Order.STATUS_PAID:
         # Booking it now could mark an order paid that lost its seats; the team sees the note and decides.
         _note(payment, state.NOTE_OVERPAID, invoice, key=str(surplus))
         return
+    # All in one transaction, the marker with the booked payment: a crash in between leaves neither.
     with transaction.atomic():
         locked = OrderPayment.objects.select_for_update(of=OF_SELF).get(pk=payment.pk)
         info = locked.info_data
@@ -224,9 +242,9 @@ def _record_surplus(payment: OrderPayment, invoice: dict) -> None:
             provider=PROVIDER, amount=delta, state=OrderPayment.PAYMENT_STATE_CREATED,
             info=json.dumps({"surplus_of": locked.pk, "invoice_id": invoice.get("id"), "status": state.SETTLED}),
         )
+        # The order is paid already: confirm() only books the money and leaves the order as it is.
+        extra.confirm(send_mail=False)
     payment.refresh_from_db()
-    # The order is paid already: confirm() only books the money and leaves the order as it is.
-    extra.confirm(send_mail=False)
     _note(payment, state.NOTE_OVERPAID, invoice, key=str(surplus))
 
 
@@ -275,7 +293,7 @@ def apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
 
     if invoice.get("status") == state.SETTLED and payment.state == OrderPayment.PAYMENT_STATE_CONFIRMED:
         _catch_up_order(payment, invoice)
-        _record_surplus(payment, invoice)
+        _record_surplus(provider, payment, invoice)
         _close_siblings(payment)
     if (decision.action != "fail" and invoice.get("status") in (state.EXPIRED, state.INVALID)
             and payment.info_data.get("held_from")):
@@ -316,6 +334,8 @@ def next_check(payment: OrderPayment, at: datetime) -> float | None:
         return checked + WATCH  # money on a closed invoice, until someone decides in BTCPay
     if (monitoring is None or monitoring > at) or payment.created >= at - timedelta(days=2):
         return checked + WATCH  # late money on a settled invoice, a manual change, a lost webhook
+    if not counted:
+        return checked + TERMINAL  # an admin may still mark it settled in BTCPay, and that webhook may get lost
     return None
 
 
@@ -343,14 +363,18 @@ def poll(budget: int = 300) -> dict:
     due.sort(key=lambda item: item[0])
     stats["due"] = len(due)
     providers = {}
-    for _, payment in due[:budget]:
+    for _, payment in due:
+        if stats["checked"] >= budget:
+            break
         event = payment.order.event
         with scope(organizer=event.organizer):
             if event.pk not in providers:
                 providers[event.pk] = event.get_payment_providers().get(PROVIDER)
+                if providers[event.pk] and providers[event.pk].configured:
+                    providers[event.pk].promote_webhook()
             provider = providers[event.pk]
             if not provider or not provider.configured:
-                continue
+                continue  # does not count against the budget, so it cannot starve configured events
             stats["checked"] += 1
             try:
                 before = (payment.state, payment.order.status)
