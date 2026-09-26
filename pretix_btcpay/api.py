@@ -7,7 +7,7 @@ import requests
 from pretix.base.payment import PaymentException
 
 from .checks import (  # noqa: F401  (re-exported for the provider)
-    OPTIONAL_PERMISSIONS, REQUIRED_PERMISSIONS, TOO_POWERFUL, is_own_link, missing_permissions, verify_signature,
+    ALLOWED_PERMISSIONS, OPTIONAL_PERMISSIONS, REQUIRED_PERMISSIONS, is_own_link, missing_permissions, verify_signature,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,16 +95,6 @@ class BTCPayAPI:
 
     def get_invoice(self, store_id: str, invoice_id: str) -> dict[str, Any]:
         return self._object("GET", f"/api/v1/stores/{_segment(store_id)}/invoices/{_segment(invoice_id)}")
-
-    def get_invoice_payment_methods(self, store_id: str, invoice_id: str) -> list[dict[str, Any]]:
-        data = self._request("GET", f"/api/v1/stores/{_segment(store_id)}/invoices/{_segment(invoice_id)}/payment-methods")
-        if not isinstance(data, list):
-            raise BTCPayError("Unexpected response from payment provider.")
-        return data
-
-    def mark_invoice(self, store_id: str, invoice_id: str, status: str) -> dict[str, Any]:
-        return self._object("POST", f"/api/v1/stores/{_segment(store_id)}/invoices/{_segment(invoice_id)}/status",
-                            json={"status": status})
 
     def refund_invoice(self, store_id: str, invoice_id: str, *, amount: str, currency: str, name: str,
                        description: str, payout_method: str | None = None) -> dict[str, Any]:

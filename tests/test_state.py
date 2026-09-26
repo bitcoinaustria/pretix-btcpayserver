@@ -69,6 +69,17 @@ class DecideTest(unittest.TestCase):
                     if status == "Processing" and new_state == PENDING:
                         self.assertEqual(second.action, "hold")
 
+    def test_money_on_a_closed_invoice_is_noted(self):
+        for status in ("Expired", "Invalid"):
+            for s in (CREATED, PENDING, FAILED, CANCELED):
+                self.assertIn(state.NOTE_MONEY_ON_CLOSED, decide(status, "None", s, paid=True).notes, (status, s))
+                self.assertNotIn(state.NOTE_MONEY_ON_CLOSED, decide(status, "None", s, paid=False).notes)
+            self.assertNotIn(state.NOTE_MONEY_ON_CLOSED, decide(status, "None", CONFIRMED, paid=True).notes)
+        # Partial and late payments have their own, more precise note.
+        self.assertEqual(decide("Expired", "PaidPartial", CREATED, paid=True).notes, (state.NOTE_PARTIAL,))
+        self.assertEqual(decide("Expired", "PaidLate", FAILED, paid=True).notes, (state.NOTE_LATE,))
+        self.assertEqual(decide("Settled", "None", CANCELED, paid=True).action, "confirm")
+
     def test_unknown_status_waits(self):
         for s in STATES:
             self.assertEqual(decide("Something", "None", s).action, "none")

@@ -6,26 +6,19 @@ import hashlib
 import hmac
 from urllib.parse import urlparse
 
-# Permissions the API key needs for the store (btcpay.store.<name>:<storeId>), and the ones
-# that enable optional features.
+# Permissions the API key needs for the store (btcpay.store.<name>:<storeId>), the optional one for refunds, and
+# nothing else: a key that can do more (spend from the Lightning node, approve payouts, change the store) must not sit
+# in pretix. Refunds only as pull payments that someone approves in BTCPay: the refund endpoint accepts any amount, and
+# with btcpay.store.cancreatepullpayments it would approve some claims on its own.
 REQUIRED_PERMISSIONS = (
     "btcpay.store.cancreateinvoice",
     "btcpay.store.canviewinvoices",
     "btcpay.store.webhooks.canmodifywebhooks",
 )
 OPTIONAL_PERMISSIONS = {
-    "btcpay.store.canmodifyinvoices": "invalidate unpaid invoices of cancelled payments",
-    "btcpay.store.cancreatepullpayments": "refunds",
+    "btcpay.store.cancreatenonapprovedpullpayments": "refunds, approved in BTCPay",
 }
-# Permissions a key for this plugin should not have: it would let a leaked key move funds or
-# change the store.
-TOO_POWERFUL = (
-    "unrestricted",
-    "btcpay.server.canmodifyserversettings",
-    "btcpay.store.canmodifystoresettings",
-    "btcpay.store.canmanagepayouts",
-    "btcpay.store.canmodifypaymentrequests",
-)
+ALLOWED_PERMISSIONS = set(REQUIRED_PERMISSIONS) | set(OPTIONAL_PERMISSIONS)
 
 
 def verify_signature(secret: str, raw_body: bytes, sig_header: str | None) -> bool:
@@ -47,23 +40,16 @@ def is_own_link(base_url: str, link: str) -> bool:
 
 def missing_permissions(permissions: list[str], store_id: str) -> tuple[list[str], list[str], list[str]]:
     """
-    Split the permissions of an API key (``btcpay.store.x:<storeId>`` or ``btcpay.store.x`` for all
-    stores) into missing required ones, missing optional ones and ones that are too powerful.
+    Check the permissions of an API key against the allowlist, all scoped to exactly this store. Returns missing
+    required ones, missing optional ones, and every permission the key has beyond that (other stores included).
     """
-    granted = set()
+    granted, extra = set(), []
     for perm in permissions or []:
         name, _, scope = str(perm).partition(":")
-        if not scope or scope == store_id:
+        if name in ALLOWED_PERMISSIONS and scope == store_id:
             granted.add(name)
-    # Only the parents that certainly include everything; anything finer is checked by name.
-    implied = {
-        "btcpay.store.canmodifystoresettings": set(REQUIRED_PERMISSIONS) | set(OPTIONAL_PERMISSIONS),
-        "unrestricted": set(REQUIRED_PERMISSIONS) | set(OPTIONAL_PERMISSIONS),
-    }
-    effective = set(granted)
-    for perm in granted:
-        effective |= implied.get(perm, set())
-    required = [p for p in REQUIRED_PERMISSIONS if p not in effective]
-    optional = [p for p in OPTIONAL_PERMISSIONS if p not in effective]
-    powerful = [p for p in TOO_POWERFUL if p in granted]
-    return required, optional, powerful
+        else:
+            extra.append(str(perm))
+    required = [p for p in REQUIRED_PERMISSIONS if p not in granted]
+    optional = [p for p in OPTIONAL_PERMISSIONS if p not in granted]
+    return required, optional, extra

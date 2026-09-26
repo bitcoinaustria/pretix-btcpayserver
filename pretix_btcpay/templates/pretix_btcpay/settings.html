@@ -2,8 +2,8 @@
 <p>{% trans "Payments go to a BTCPay Server store over the Greenfield API. Create an API key in BTCPay under Account → API keys, limited to the receiving store, with exactly these permissions:" %}</p>
 <ul>
     <li><code>btcpay.store.cancreateinvoice</code>, <code>btcpay.store.canviewinvoices</code>, <code>btcpay.store.webhooks.canmodifywebhooks</code> ({% trans "required" %})</li>
-    <li><code>btcpay.store.canmodifyinvoices</code> ({% trans "optional: invalidates unpaid invoices when a buyer switches the payment method" %})</li>
-    <li><code>btcpay.store.cancreatepullpayments</code> ({% trans "optional: refunds" %})</li>
+    <li><code>btcpay.store.cancreatenonapprovedpullpayments</code> ({% trans "optional: refunds, which someone approves in BTCPay" %})</li>
 </ul>
+<p>{% trans "Keys with any other permission, or for other stores, are refused: they could spend or change more than this plugin needs." %}</p>
 <p>{% trans "Saving checks the key and registers this webhook on the store:" %} <code>{{ webhook_url }}</code>{% if webhook_id %} ({% trans "registered" %}: {{ webhook_id }}){% endif %}</p>
 <p>{% trans "If webhooks get lost, the periodic task of pretix (pretix cron) asks BTCPay about open invoices every few minutes. Make sure it runs." %}</p>

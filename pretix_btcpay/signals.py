@@ -37,12 +37,18 @@ LOG_TEXTS = {
     "pretix_btcpay.marked": _("A BTCPay administrator set the invoice status by hand."),
     "pretix_btcpay.invalid_after_confirm": _("BTCPay marked an invoice as invalid after pretix had confirmed the "
                                              "payment. Please check this order by hand."),
+    "pretix_btcpay.money_on_closed_invoice": _("Money arrived on a BTCPay invoice that had expired or was marked "
+                                               "invalid. Check it in BTCPay: mark it as settled to confirm the "
+                                               "payment, or return the money."),
     "pretix_btcpay.settled_after_refund": _("BTCPay settled an invoice of a payment that was already refunded."),
     "pretix_btcpay.hold_failed": _("The order could not be kept reserved while the payment confirms."),
     "pretix_btcpay.hold_released": _("The payment was dropped; the order has its old payment deadline again."),
     "pretix_btcpay.sibling_cancelled": _("Another open BTCPay payment of this paid order was cancelled."),
     "pretix_btcpay.mismatch": _("A BTCPay invoice did not match its payment and was ignored."),
-    "pretix_btcpay.refund.created": _("A BTCPay refund was created; the buyer has to claim it."),
+    "pretix_btcpay.refund.created": _("A BTCPay refund was created; the buyer has to claim it and the team to approve it in BTCPay."),
+    "pretix_btcpay.refund.ambiguous": _("BTCPay did not answer while creating a refund. Check in BTCPay whether a pull payment with this name exists before trying again."),
+    "pretix_btcpay.order_caught_up": _("The order was marked paid after its confirmed BTCPay payment."),
+    "pretix_btcpay.quota_exceeded": _("The BTCPay payment arrived, but the order could not be marked paid because its seats are gone. Add quota or return the money."),
     "pretix_btcpay.webhook.registered": _("The BTCPay webhook was registered."),
 }
 

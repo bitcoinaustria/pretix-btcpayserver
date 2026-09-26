@@ -10,7 +10,7 @@ from pretix.base.models import Order, OrderPayment
 from pretix.base.services.locking import LockTimeoutException
 
 from .api import WEBHOOK_EVENTS, BTCPayAPI, BTCPayError
-from .sync import PROVIDER, InvoiceMismatch, apply, event_ref, invoice_ids
+from .sync import PROVIDER, InvoiceMismatch, apply, event_ref, is_surplus
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +75,8 @@ def webhook(request, *args, **kwargs):
     except (Order.DoesNotExist, OrderPayment.DoesNotExist, TypeError, ValueError):
         logger.warning("BTCPay: invoice %s points to no payment of %s", invoice_id, event_ref(request.event))
         return HttpResponse(status=200)
-    if invoice_id not in invoice_ids(payment):
-        logger.warning("BTCPay: invoice %s is not attached to payment %s", invoice_id, payment.full_id)
+    if invoice_id != payment.info_data.get("invoice_id") or is_surplus(payment):
+        logger.warning("BTCPay: invoice %s is not the invoice of payment %s", invoice_id, payment.full_id)
         return HttpResponse(status=200)
 
     try:

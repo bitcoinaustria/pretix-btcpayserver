@@ -39,6 +39,7 @@ NOTE_LATE = "paid_late"
 NOTE_MARKED = "marked"
 NOTE_INVALID_AFTER_CONFIRM = "invalid_after_confirm"
 NOTE_SETTLED_AFTER_REFUND = "settled_after_refund"
+NOTE_MONEY_ON_CLOSED = "money_on_closed_invoice"
 
 
 @dataclass(frozen=True)
@@ -52,11 +53,12 @@ class Decision:
     notes: tuple = field(default_factory=tuple)
 
 
-def decide(status: str, additional_status: str | None, payment_state: str) -> Decision:
+def decide(status: str, additional_status: str | None, payment_state: str, paid: bool = False) -> Decision:
     """
     What to do with a payment in ``payment_state`` whose invoice is in ``status`` /
-    ``additional_status``. Idempotent: deciding again after the action was carried out
-    yields ``none`` (apart from notes, which the caller logs only once).
+    ``additional_status``; ``paid`` says whether any money arrived on the invoice. Idempotent:
+    deciding again after the action was carried out yields ``none`` (apart from notes, which
+    the caller logs only once).
     """
     extra = additional_status or "None"
     notes = []
@@ -68,6 +70,11 @@ def decide(status: str, additional_status: str | None, payment_state: str) -> De
         notes.append(NOTE_LATE)
     if extra == "Marked" and status in (SETTLED, INVALID):
         notes.append(NOTE_MARKED)
+    if (status in (EXPIRED, INVALID) and paid and payment_state not in (CONFIRMED, REFUNDED)
+            and extra not in ("PaidPartial", "PaidLate")):
+        # Money arrived on an invoice that no longer counts, for example one invalidated while the
+        # buyer was paying it: nothing confirms it on its own, so a human has to look.
+        notes.append(NOTE_MONEY_ON_CLOSED)
 
     if status == SETTLED:
         if payment_state == CONFIRMED:

@@ -41,21 +41,28 @@ class LinkTest(unittest.TestCase):
 
 
 class PermissionTest(unittest.TestCase):
+    REQ = ["btcpay.store.cancreateinvoice:S", "btcpay.store.canviewinvoices:S", "btcpay.store.webhooks.canmodifywebhooks:S"]
+
     def test_exact(self):
-        perms = ["btcpay.store.cancreateinvoice:S", "btcpay.store.canviewinvoices:S", "btcpay.store.webhooks.canmodifywebhooks:S"]
-        self.assertEqual(missing_permissions(perms, "S"), ([], ["btcpay.store.canmodifyinvoices", "btcpay.store.cancreatepullpayments"], []))
+        self.assertEqual(missing_permissions(self.REQ, "S"), ([], ["btcpay.store.cancreatenonapprovedpullpayments"], []))
+        self.assertEqual(missing_permissions(self.REQ + ["btcpay.store.cancreatenonapprovedpullpayments:S"], "S"), ([], [], []))
 
-    def test_other_store_does_not_count(self):
-        perms = ["btcpay.store.cancreateinvoice:OTHER", "btcpay.store.canviewinvoices:S", "btcpay.store.webhooks.canmodifywebhooks:S"]
-        self.assertEqual(missing_permissions(perms, "S")[0], ["btcpay.store.cancreateinvoice"])
+    def test_other_store_does_not_count_and_is_too_much(self):
+        perms = ["btcpay.store.cancreateinvoice:OTHER"] + self.REQ[1:]
+        required, _, extra = missing_permissions(perms, "S")
+        self.assertEqual(required, ["btcpay.store.cancreateinvoice"])
+        self.assertEqual(extra, ["btcpay.store.cancreateinvoice:OTHER"])
 
-    def test_all_stores(self):
-        perms = ["btcpay.store.cancreateinvoice", "btcpay.store.canviewinvoices", "btcpay.store.webhooks.canmodifywebhooks"]
-        self.assertEqual(missing_permissions(perms, "S")[0], [])
+    def test_all_stores_is_too_much(self):
+        required, _, extra = missing_permissions([p.split(":")[0] for p in self.REQ], "S")
+        self.assertEqual(len(required), 3)
+        self.assertEqual(len(extra), 3)
 
-    def test_too_powerful(self):
-        self.assertEqual(missing_permissions(["unrestricted"], "S"), ([], [], ["unrestricted"]))
-        self.assertIn("btcpay.store.canmodifystoresettings", missing_permissions(["btcpay.store.canmodifystoresettings:S"], "S")[2])
+    def test_anything_that_can_spend_or_change_is_refused(self):
+        for perm in ("unrestricted", "btcpay.store.canuselightningnode:S", "btcpay.store.cancreatepullpayments:S",
+                     "btcpay.store.canmanagepullpayments:S", "btcpay.store.canmodifystoresettings:S",
+                     "btcpay.store.canmodifyinvoices:S", "btcpay.server.canmodifyserversettings", "btcpay.user.canviewprofile"):
+            self.assertEqual(missing_permissions(self.REQ + [perm], "S")[2], [perm], perm)
 
 
 if __name__ == "__main__":

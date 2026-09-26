@@ -6,6 +6,48 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Language: de\n"
 
+msgid "A Greenfield API key limited to the receiving store, with exactly these permissions: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices and btcpay.store.webhooks.canmodifywebhooks, optionally btcpay.store.cancreatenonapprovedpullpayments for refunds. Keys with more are refused."
+msgstr "Ein Greenfield-API-Schlüssel nur für den empfangenden Store, mit genau diesen Rechten: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices und btcpay.store.webhooks.canmodifywebhooks, für Erstattungen zusätzlich btcpay.store.cancreatenonapprovedpullpayments. Schlüssel mit mehr Rechten werden abgelehnt."
+
+msgid "The API key is not allowed to create refunds (btcpay.store.cancreatenonapprovedpullpayments)."
+msgstr "Der API-Schlüssel darf keine Erstattungen anlegen (btcpay.store.cancreatenonapprovedpullpayments)."
+
+msgid "The webhook is being registered right now. Please save again in a minute."
+msgstr "Der Webhook wird gerade eingerichtet. Bitte in einer Minute noch einmal speichern."
+
+msgid "This payment can not be continued. Please start the payment again."
+msgstr "Diese Zahlung lässt sich nicht fortsetzen. Bitte starten Sie die Zahlung neu."
+
+msgid "A BTCPay refund was created; the buyer has to claim it and the team to approve it in BTCPay."
+msgstr "Eine Erstattung wurde in BTCPay angelegt; die Käuferin oder der Käufer muss sie abholen, und das Team gibt sie in BTCPay frei."
+
+msgid "BTCPay did not answer while creating a refund. Check in BTCPay whether a pull payment with this name exists before trying again."
+msgstr "BTCPay hat beim Anlegen einer Erstattung nicht geantwortet. Bitte in BTCPay nachsehen, ob es ein Pull Payment mit diesem Namen gibt, bevor es jemand noch einmal versucht."
+
+msgid "The order was marked paid after its confirmed BTCPay payment."
+msgstr "Die Bestellung wurde nachträglich als bezahlt markiert, passend zu ihrer bestätigten BTCPay-Zahlung."
+
+msgid "The BTCPay payment arrived, but the order could not be marked paid because its seats are gone. Add quota or return the money."
+msgstr "Die BTCPay-Zahlung ist angekommen, aber die Bestellung ließ sich nicht als bezahlt markieren, weil ihre Plätze vergeben sind. Kontingent erhöhen oder das Geld zurückzahlen."
+
+msgid "optional: refunds, which someone approves in BTCPay"
+msgstr "optional: Erstattungen, die jemand in BTCPay freigibt"
+
+msgid "Keys with any other permission, or for other stores, are refused: they could spend or change more than this plugin needs."
+msgstr "Schlüssel mit anderen Rechten oder für andere Stores werden abgelehnt: Mit ihnen ließe sich mehr ausgeben oder ändern, als das Plugin braucht."
+
+msgid "Money beyond the amount of another BTCPay payment of this order, on the same invoice:"
+msgstr "Geld über den Betrag einer anderen BTCPay-Zahlung dieser Bestellung hinaus, auf derselben Rechnung:"
+
+msgid "Booked as overpayment"
+msgstr "Als Überzahlung gebucht"
+
+msgid "Send this link to the buyer. They enter their own Bitcoin address or Lightning invoice there, and someone approves the payout in BTCPay; once BTCPay has paid it out, mark this refund as done."
+msgstr "Diesen Link an die Käuferin oder den Käufer schicken. Dort trägt sie oder er eine eigene Bitcoin-Adresse oder Lightning-Rechnung ein, und jemand gibt die Auszahlung in BTCPay frei; sobald BTCPay ausgezahlt hat, die Erstattung als erledigt markieren."
+
+msgid "BTCPay did not answer while creating this refund. Check in BTCPay whether a pull payment with this name exists before trying again:"
+msgstr "BTCPay hat beim Anlegen dieser Erstattung nicht geantwortet. Bitte in BTCPay nachsehen, ob es ein Pull Payment mit diesem Namen gibt, bevor es jemand noch einmal versucht:"
+
 msgid "BTCPay Server"
 msgstr "BTCPay Server"
 
@@ -23,9 +65,6 @@ msgstr "Die Adresse Ihrer BTCPay-Server-Instanz, etwa https://btcpay.example.com
 
 msgid "BTCPay Server API key"
 msgstr "API-Schlüssel für BTCPay Server"
-
-msgid "A Greenfield API key limited to the receiving store. Required: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices and btcpay.store.webhooks.canmodifywebhooks. Optional: btcpay.store.canmodifyinvoices (invalidate unpaid invoices of cancelled payments) and btcpay.store.cancreatepullpayments (refunds). Nothing else."
-msgstr "Ein Greenfield-API-Schlüssel nur für den empfangenden Store. Nötig: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices und btcpay.store.webhooks.canmodifywebhooks. Optional: btcpay.store.canmodifyinvoices (macht unbezahlte Rechnungen abgebrochener Zahlungen ungültig) und btcpay.store.cancreatepullpayments (Erstattungen). Sonst nichts."
 
 msgid "Store ID"
 msgstr "Store-ID"
@@ -96,9 +135,6 @@ msgstr "Ein Teil dieser Zahlung ist schon angekommen. Bitte melden Sie sich bei 
 msgid "This payment has no BTCPay invoice to refund."
 msgstr "Zu dieser Zahlung gibt es keine BTCPay-Rechnung, die sich erstatten ließe."
 
-msgid "The API key is not allowed to create refunds (btcpay.store.cancreatepullpayments)."
-msgstr "Der API-Schlüssel darf keine Erstattungen anlegen (btcpay.store.cancreatepullpayments)."
-
 msgid "BTCPay Server could not create the refund: please do it in BTCPay."
 msgstr "BTCPay Server konnte die Erstattung nicht anlegen: bitte direkt in BTCPay erstatten."
 
@@ -129,6 +165,9 @@ msgstr "Jemand hat den Status der Rechnung in BTCPay von Hand gesetzt."
 msgid "BTCPay marked an invoice as invalid after pretix had confirmed the payment. Please check this order by hand."
 msgstr "BTCPay hat eine Rechnung als ungültig markiert, nachdem pretix die Zahlung bestätigt hatte. Bitte diese Bestellung von Hand prüfen."
 
+msgid "Money arrived on a BTCPay invoice that had expired or was marked invalid. Check it in BTCPay: mark it as settled to confirm the payment, or return the money."
+msgstr "Auf einer abgelaufenen oder als ungültig markierten BTCPay-Rechnung ist Geld angekommen. Bitte in BTCPay prüfen: als bezahlt markieren, um die Zahlung zu bestätigen, oder das Geld zurückzahlen."
+
 msgid "BTCPay settled an invoice of a payment that was already refunded."
 msgstr "BTCPay hat eine Rechnung zu einer schon erstatteten Zahlung als bezahlt gemeldet."
 
@@ -143,9 +182,6 @@ msgstr "Eine weitere offene BTCPay-Zahlung dieser bezahlten Bestellung wurde abg
 
 msgid "A BTCPay invoice did not match its payment and was ignored."
 msgstr "Eine BTCPay-Rechnung passte nicht zu ihrer Zahlung und wurde übergangen."
-
-msgid "A BTCPay refund was created; the buyer has to claim it."
-msgstr "Eine Erstattung wurde in BTCPay angelegt; die Käuferin oder der Käufer muss sie abholen."
 
 msgid "The BTCPay webhook was registered."
 msgstr "Der Webhook in BTCPay wurde eingerichtet."
@@ -180,9 +216,6 @@ msgstr "BTCPay Server war nicht erreichbar."
 msgid "Last known:"
 msgstr "Zuletzt bekannt:"
 
-msgid "Earlier invoices"
-msgstr "Frühere Rechnungen"
-
 msgid "Needs attention"
 msgstr "Braucht Aufmerksamkeit"
 
@@ -195,20 +228,11 @@ msgstr "BTCPay-Pull-Payment"
 msgid "Claim link for the buyer"
 msgstr "Link zum Abholen für die Käuferin oder den Käufer"
 
-msgid "Send this link to the buyer. They enter their own Bitcoin address or Lightning invoice there; once BTCPay has paid it out, mark this refund as done."
-msgstr "Diesen Link an die Käuferin oder den Käufer schicken. Dort trägt sie oder er eine eigene Bitcoin-Adresse oder Lightning-Rechnung ein; sobald BTCPay ausgezahlt hat, die Erstattung als erledigt markieren."
-
 msgid "Payments go to a BTCPay Server store over the Greenfield API. Create an API key in BTCPay under Account → API keys, limited to the receiving store, with exactly these permissions:"
 msgstr "Die Zahlungen gehen über die Greenfield-API an einen Store in BTCPay Server. Den API-Schlüssel in BTCPay unter „Account → API keys“ anlegen, beschränkt auf den empfangenden Store, mit genau diesen Rechten:"
 
 msgid "required"
 msgstr "nötig"
-
-msgid "optional: invalidates unpaid invoices when a buyer switches the payment method"
-msgstr "optional: macht unbezahlte Rechnungen ungültig, wenn jemand die Zahlungsart wechselt"
-
-msgid "optional: refunds"
-msgstr "optional: Erstattungen"
 
 msgid "Saving checks the key and registers this webhook on the store:"
 msgstr "Beim Speichern wird der Schlüssel geprüft und dieser Webhook im Store eingerichtet:"

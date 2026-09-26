@@ -1,5 +1,7 @@
 {% load i18n %}
-{% if info.invoice_id %}
+{% if info.surplus_of %}
+    <p>{% trans "Money beyond the amount of another BTCPay payment of this order, on the same invoice:" %} {{ info.invoice_id }}</p>
+{% elif info.invoice_id %}
     <dl class="dl-horizontal">
         <dt>{% trans "BTCPay invoice" %}</dt>
         <dd><a href="{{ invoice_link }}" target="_blank" rel="noopener noreferrer">{{ info.invoice_id }}</a></dd>
@@ -14,9 +16,9 @@
             <dt>{% trans "Status" %}</dt>
             <dd>{% trans "BTCPay Server could not be reached." %} {% trans "Last known:" %} {{ info.status|default:"–" }}</dd>
         {% endif %}
-        {% if info.previous_invoices %}
-            <dt>{% trans "Earlier invoices" %}</dt>
-            <dd>{{ info.previous_invoices|join:", " }}</dd>
+        {% if info.surplus_recorded %}
+            <dt>{% trans "Booked as overpayment" %}</dt>
+            <dd>{{ info.surplus_recorded }}</dd>
         {% endif %}
         {% if notes %}
             <dt>{% trans "Needs attention" %}</dt>
