@@ -222,7 +222,7 @@ def _catch_up_order(payment: OrderPayment, invoice: dict) -> None:
 
 def _confirmed_amount(provider, invoice: dict) -> Decimal | None:
     """
-    What arrived on the invoice and is confirmed, in the invoice currency, rounded down to the cent; None while any
+    What arrived on the invoice and is confirmed, in the invoice currency and not rounded; None while any
     payment is still unconfirmed or BTCPay does not answer. paidAmount also counts unconfirmed transactions, and one
     replaced later would leave a surplus that never arrived; refunding that would pay out money that is not there.
     Computed from the payment list alone, so a transfer that turned invalid since the invoice was read cannot count.
@@ -240,7 +240,7 @@ def _confirmed_amount(provider, invoice: dict) -> Decimal | None:
                 total += (_decimal(p.get("value")) - _decimal(p.get("fee"))) * rate
             elif p.get("status") != "Invalid":
                 return None
-    return total.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+    return total
 
 
 def _record_surplus(provider, payment: OrderPayment, invoice: dict) -> None:
@@ -261,8 +261,9 @@ def _record_surplus(provider, payment: OrderPayment, invoice: dict) -> None:
     confirmed = _confirmed_amount(provider, invoice)
     if confirmed is None:
         return  # the webhook for the confirmation, or the poll, comes back for it
-    # Never more than BTCPay itself counts (its paidAmount is net of payment method fees), never unconfirmed money.
-    surplus = min(confirmed, paid) - payment.amount
+    # Never more than BTCPay itself counts (its paidAmount is net of payment method fees), never unconfirmed money,
+    # and rounded down to the cent.
+    surplus = min(confirmed.quantize(CENT, rounding=ROUND_DOWN), paid) - payment.amount
     if Order.objects.get(pk=payment.order_id).status != Order.STATUS_PAID:
         # Booking it now could mark an order paid that lost its seats; the team sees the note and decides.
         _note(payment, state.NOTE_OVERPAID, invoice, key=str(surplus))
@@ -272,10 +273,10 @@ def _record_surplus(provider, payment: OrderPayment, invoice: dict) -> None:
         locked = OrderPayment.objects.select_for_update(of=OF_SELF).get(pk=payment.pk)
         info = locked.info_data
         delta = surplus - _decimal(info.get("surplus_recorded"))
-        # Done with this paidAmount only if the settled receipts really add up to it: rounding down to the cent can
-        # leave a cent less, which must not keep the poll asking forever. If a receipt turned invalid since the
-        # invoice was read, they add up to less, and the rest stays open.
-        if paid - confirmed <= CENT:
+        # Done with this paidAmount only if the settled receipts really add up to it, give or take the fraction of a
+        # cent that BTCPay's own rounding makes (that must not keep the poll asking forever). A receipt that turned
+        # invalid since the invoice was read, or a missing cent, leaves the rest open.
+        if paid - confirmed < CENT:
             info["surplus_counted"] = str(paid)
             info["surplus_open"] = False
         if delta > 0:
@@ -360,8 +361,10 @@ def sync_payment(provider, payment: OrderPayment, source: str, wait: float = 0) 
     invoice_id = payment.info_data.get("invoice_id")
     if not invoice_id or is_surplus(payment):
         return None
-    invoice = provider.client.get_invoice(str(provider.settings.store_id), invoice_id)
-    return apply(provider, payment, invoice, source, wait=wait)
+    # The order lock first: a busy order costs no request to BTCPay, so busy ones cannot eat the poll's time.
+    with order_lock(payment.order_id, wait=wait):
+        invoice = provider.client.get_invoice(str(provider.settings.store_id), invoice_id)
+        return apply(provider, payment, invoice, source)
 
 
 def next_check(payment: OrderPayment, at: datetime) -> float | None:

@@ -433,6 +433,19 @@ with scope(organizer=event.organizer):
     check(extra == [Decimal("132.99")] and sync.next_check(payment, now()) is None,
           f"ein Cent weniger nach dem Abrunden: gebucht ({extra}), der Abgleich fragt nicht ewig nach")
 
+    print("Ein ganzer Cent fehlt")
+    order, payment, inv = order_with_payment()
+    PAYMENTS[inv] = [("Settled", "266.00"), ("Settled", "133.00")]
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, "PaidOver", paidAmount="399.01"), "check")
+    reload(order, payment)
+    first = payment.info_data.get("surplus_counted")
+    PAYMENTS[inv] = [("Settled", "266.00"), ("Settled", "133.00"), ("Settled", "0.01")]
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, "PaidOver", paidAmount="399.01"), "check")
+    reload(order, payment)
+    extra = sorted(order.payments.filter(state="confirmed").exclude(pk=payment.pk).values_list("amount", flat=True))
+    check(first is None and extra == [Decimal("0.01"), Decimal("133.00")],
+          f"BTCPay zählt einen Cent mehr, als bestätigt ist: offen gelassen, der Cent danach gebucht ({extra})")
+
     print("Nach der Erstattung noch mehr Geld")
     order, payment, inv = order_with_payment()
     payment.state = OrderPayment.PAYMENT_STATE_REFUNDED
@@ -476,6 +489,21 @@ with scope(organizer=event.organizer):
     check(len(ours - seen_first - seen_second) == 0, "zweiter Lauf: zuerst die, die noch nie dran waren; keine bleibt liegen")
     check(old_invoice in seen_first | seen_second, "eine Settled-Rechnung, die pretix nicht gezählt hat, fällt nie aus dem Abgleich, auch nach einem halben Jahr")
     check(open_invoice in seen_first | seen_second, "ein noch nicht gebuchter Überschuss auch nicht")
+
+    print("Besetzte Bestellung im Abgleich")
+    order, payment, inv = order_with_payment()
+    payment.info_data = {**payment.info_data, "status": state.NEW, "checked": 0}
+    payment.save(update_fields=["info"])
+    asked_busy = []
+    original_get = BTCPayAPI.get_invoice
+    BTCPayAPI.get_invoice = lambda self, store_id, invoice_id: asked_busy.append(invoice_id) or (_ for _ in ()).throw(_Err("weg", status=404))
+    other_try(locks.ORDER, order.pk)
+    try:
+        stats = sync.poll(budget=1000)
+    finally:
+        other_release(locks.ORDER, order.pk)
+        BTCPayAPI.get_invoice = original_get
+    check(inv not in asked_busy and stats["busy"] >= 1, f"besetzt: übersprungen, ohne BTCPay zu fragen ({stats['busy']} besetzt)")
 
     for pk in OrderPayment.objects.filter(order__pk__in=created).values_list("pk", flat=True):
         _cache.delete(f"pretix_btcpay_refund_{pk}")

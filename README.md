@@ -73,7 +73,8 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
 - Webhook, poll, checkout and cancelling work on an order one at a time, under a PostgreSQL advisory lock that lasts
   until the surrounding transaction commits (cancelling runs inside pretix' own transaction) and never runs out. It
   is only ever tried, never waited for in the database, so it cannot deadlock with pretix' row and quota locks. A
-  webhook that finds the order busy gets a 503 and BTCPay delivers it again; the poll takes it next time.
+  webhook that finds the order busy gets a 503 and BTCPay delivers it again; the poll takes the lock before it asks
+  BTCPay, skips a busy order without a request and takes it next time.
 - The poll asks about invoices that are due, longest unchecked first, at most 300 per run, and starts no new one
   after 45 seconds (one that is running finishes; the next run continues): open ones every minute, settled or
   closed ones pretix has not caught up with every few minutes, the rest every half hour while BTCPay still watches

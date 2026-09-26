@@ -51,9 +51,8 @@ def advisory_lock(space: int, key: int, wait: float = 0, busy: type[Exception] =
         yield
         return
     connection.ensure_connection()
-    session = connection.connection
     # Held by an outer block of this thread, on this very session; after a reconnect it is gone and taken again.
-    if held.get(ident) is session:
+    if held.get(ident) is not None and held.get(ident) is connection.connection:
         yield
         return
     in_transaction = connection.in_atomic_block
@@ -67,6 +66,8 @@ def advisory_lock(space: int, key: int, wait: float = 0, busy: type[Exception] =
             if time.monotonic() >= until:
                 raise busy()
             time.sleep(0.2)
+        # The session the lock was really taken on: opening the cursor may have replaced the connection.
+        session = connection.connection
     outer = held.get(ident)
     held[ident] = session
     try:
