@@ -40,6 +40,7 @@ DEFAULT_MONITORING = timedelta(hours=24)
 ACTIVE, CATCH_UP, WATCH, TERMINAL = 60, 300, 1800, 6 * 3600
 # Which payments the poll looks at at all; next_check decides which of them are due. Long enough for the whole sale.
 WINDOW = timedelta(days=180)
+CENT = Decimal("0.01")
 
 
 class InvoiceMismatch(Exception):
@@ -251,7 +252,12 @@ def _record_surplus(provider, payment: OrderPayment, invoice: dict) -> None:
     paid = _decimal(invoice.get("paidAmount"))
     info = payment.info_data
     if paid - payment.amount <= _decimal(info.get("surplus_recorded")) or info.get("surplus_counted") == str(paid):
+        if info.get("surplus_open"):
+            _update_info(payment, surplus_open=False)
         return
+    if not info.get("surplus_open"):
+        # Marked, so the poll keeps asking however old the payment gets, until the money is booked.
+        _update_info(payment, surplus_open=True)
     confirmed = _confirmed_amount(provider, invoice)
     if confirmed is None:
         return  # the webhook for the confirmation, or the poll, comes back for it
@@ -266,9 +272,12 @@ def _record_surplus(provider, payment: OrderPayment, invoice: dict) -> None:
         locked = OrderPayment.objects.select_for_update(of=OF_SELF).get(pk=payment.pk)
         info = locked.info_data
         delta = surplus - _decimal(info.get("surplus_recorded"))
-        # Everything BTCPay counted up to this paidAmount is booked; rounding down to the cent can leave a cent less,
-        # which must not keep the poll asking forever.
-        info["surplus_counted"] = str(paid)
+        # Done with this paidAmount only if the settled receipts really add up to it: rounding down to the cent can
+        # leave a cent less, which must not keep the poll asking forever. If a receipt turned invalid since the
+        # invoice was read, they add up to less, and the rest stays open.
+        if paid - confirmed <= CENT:
+            info["surplus_counted"] = str(paid)
+            info["surplus_open"] = False
         if delta > 0:
             info["surplus_recorded"] = str(surplus)
         locked.info_data = info
@@ -403,7 +412,8 @@ def poll(budget: int = 300, seconds: float = 45) -> dict:
     # paid. pretix stores info as JSON with sorted keys and the default separators.
     settled = Q(info__contains='"status": "Settled"')
     unfinished = settled & (~Q(state__in=(OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED))
-                            | Q(order__status__in=(Order.STATUS_PENDING, Order.STATUS_EXPIRED)))
+                            | Q(order__status__in=(Order.STATUS_PENDING, Order.STATUS_EXPIRED))
+                            | Q(info__contains='"surplus_open": true'))
     with scopes_disabled():
         candidates = list(
             OrderPayment.objects.filter(provider=PROVIDER).filter(Q(created__gte=at - WINDOW) | unfinished)
@@ -437,7 +447,8 @@ def poll(budget: int = 300, seconds: float = 45) -> dict:
                 payment.order.refresh_from_db()
                 stats["changed"] += int((payment.state, payment.order.status) != before)
             except OrderBusy:
-                stats["busy"] += 1  # a webhook is on it right now
+                stats["busy"] += 1  # a webhook is on it right now; not counted, so busy ones cannot starve the rest
+                stats["checked"] -= 1
             except (BTCPayError, InvoiceMismatch, LockTimeoutException) as e:
                 stats["errors"] += 1
                 _update_info(payment, checked=int(time.time()))  # try the others first next time

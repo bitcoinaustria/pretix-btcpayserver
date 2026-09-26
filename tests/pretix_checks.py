@@ -264,6 +264,27 @@ with scope(organizer=event.organizer):
     free = other_try(locks.ORDER, order.pk)
     other_release(locks.ORDER, order.pk)
     check(order.status == "p" and free, "frei: angewendet, Sperre danach wieder frei")
+    # Die Verbindung bricht ab und wird neu aufgebaut: die alte Sitzung nimmt ihre Sperre mit, die innere nimmt sie neu.
+    from django.db import DatabaseError, connection as _conn
+    order, payment, inv = order_with_payment()
+    with sync.order_lock(order.pk):
+        _conn.close()
+        with sync.order_lock(order.pk):
+            inner = other_try(locks.ORDER, order.pk)
+        released = other_try(locks.ORDER, order.pk)
+        other_release(locks.ORDER, order.pk)
+    check(not inner and released, "nach einem Verbindungsabbruch: auf der neuen Sitzung wieder gesperrt, danach frei")
+    # Entsperren schlägt fehl: die Sitzung wird geschlossen, damit keine Sperre an einer offenen Verbindung hängen bleibt.
+    original_release = locks._release
+    locks._release = lambda ident: (_ for _ in ()).throw(DatabaseError("abgebrochen"))
+    try:
+        with sync.order_lock(order.pk):
+            pass
+    finally:
+        locks._release = original_release
+    leaked = not other_try(locks.ORDER, order.pk)
+    other_release(locks.ORDER, order.pk)
+    check(not leaked, "Entsperren gescheitert: Verbindung geschlossen, die Sperre ist frei")
     # Wie beim Wechsel der Zahlart: pretix ruft cancel_payment in seiner eigenen Transaktion auf.
     order, payment, inv = order_with_payment()
     with _tx.atomic():
@@ -364,6 +385,41 @@ with scope(organizer=event.organizer):
     check(both == ["transit", "transit"] and len(posts) == 4, f"Überschuss und Ticket erstattet: zwei Claims ({both})")
     BTCPayAPI.refund_invoice = original_refund
 
+    print("Überschuss, dessen Zahlung dazwischen ungültig wurde")
+    order, payment, inv = order_with_payment()
+    PAYMENTS[inv] = [("Settled", "266.00"), ("Invalid", "133.00")]  # die Rechnung sagte noch 399, die Liste nicht mehr
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, "PaidOver", paidAmount="399.00"), "check")
+    reload(order, payment)
+    check(not order.payments.exclude(pk=payment.pk).exists() and payment.info_data.get("surplus_open")
+          and payment.info_data.get("surplus_counted") is None, "nichts gebucht, aber offen: nicht als erledigt vermerkt")
+    PAYMENTS[inv] = [("Settled", "266.00"), ("Invalid", "133.00"), ("Settled", "133.00")]
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, "PaidOver", paidAmount="399.00"), "check")
+    reload(order, payment)
+    extra = list(order.payments.filter(state="confirmed").exclude(pk=payment.pk).values_list("amount", flat=True))
+    check(extra == [Decimal("133.00")] and not payment.info_data.get("surplus_open"), f"die echte Zahlung danach: gebucht ({extra})")
+    order, payment, inv = order_with_payment()
+    PAYMENTS[inv] = [("Settled", "266.00"), ("Processing", "133.00")]
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, "PaidOver", paidAmount="399.00"), "check")
+    OrderPayment.objects.filter(pk=payment.pk).update(created=now() - sync.WINDOW - timedelta(days=30))
+    payment.refresh_from_db()
+    payment.info_data = {**payment.info_data, "checked": 0}  # fällig, als wäre es länger her
+    payment.save(update_fields=["info"])
+    open_invoice = inv
+
+    print("Stornieren in pretix' Transaktion")
+    asked_cancel = []
+    original_get = BTCPayAPI.get_invoice
+    BTCPayAPI.get_invoice = lambda self, store_id, invoice_id: asked_cancel.append(invoice_id) or (_ for _ in ()).throw(_Err("aus", status=503))
+    order, payment, inv = order_with_payment()
+    with _tx.atomic():
+        provider.cancel_payment(payment)
+    reload(order, payment)
+    check(not asked_cancel and payment.state == "canceled", "in einer Transaktion: kein Aufruf bei BTCPay, storniert nach dem letzten bekannten Stand")
+    order, payment, inv = order_with_payment()
+    provider.cancel_payment(payment)
+    BTCPayAPI.get_invoice = original_get
+    check(asked_cancel == [inv], "außerhalb: erst bei BTCPay nachgesehen")
+
     print("Überschuss mit Rundung")
     order, payment, inv = order_with_payment()
     PAYMENTS[inv] = [("Settled", "266.00"), ("Settled", "132.999")]
@@ -419,6 +475,7 @@ with scope(organizer=event.organizer):
     check(first["checked"] == 300 and len(seen_first) == 300, f"erster Lauf: 300 von {first['due']} fälligen")
     check(len(ours - seen_first - seen_second) == 0, "zweiter Lauf: zuerst die, die noch nie dran waren; keine bleibt liegen")
     check(old_invoice in seen_first | seen_second, "eine Settled-Rechnung, die pretix nicht gezählt hat, fällt nie aus dem Abgleich, auch nach einem halben Jahr")
+    check(open_invoice in seen_first | seen_second, "ein noch nicht gebuchter Überschuss auch nicht")
 
     for pk in OrderPayment.objects.filter(order__pk__in=created).values_list("pk", flat=True):
         _cache.delete(f"pretix_btcpay_refund_{pk}")

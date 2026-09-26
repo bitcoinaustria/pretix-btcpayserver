@@ -85,6 +85,25 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
   arrives after a refund or on a closed invoice is never silent.
 - The pending page polls a status endpoint that needs the order secret and only reads the database.
 
+## Known limitations
+
+Accepted for the Bitcoin Zitadelle, and worth knowing before you rely on the plugin:
+
+- A counted payment is no longer polled once BTCPay stopped watching its invoice (a day by default) and two days
+  have passed: after that only an admin could change the invoice in BTCPay, and for a counted payment that would
+  only produce a note. The webhook is then the only signal.
+- Money that arrives after a refund, or on an expired or invalid invoice, is logged for a human, not booked.
+- Amounts are handled in the event currency to the cent; an event priced in BTC would need other rounding.
+- Cancelling inside pretix' own transaction (switching the payment method, changing or cancelling an order) decides
+  on the last state the webhook or poll saw, without asking BTCPay; money that still arrives confirms the cancelled
+  payment.
+- With refunds switched on, the note that stops a second claim lives in the shared cache: Redis should persist its
+  data, or a crash right after a claim plus a lost cache could let a retry create a second, still unapproved, claim.
+- The poll's 45 seconds are a target for starting checks, not a hard limit: a check that has started finishes (two
+  BTCPay requests at most, each with a 15 second read timeout).
+- Only the current invoice of each payment is reconciled. Payments from upstream or from earlier commits of this fork
+  that kept several invoices per payment would need a migration first; the Bitcoin Zitadelle starts on a fresh install.
+
 ## Security notes
 
 - Webhooks: `POST` only, at most 64 KiB, HMAC-SHA256 over the raw body (`BTCPay-Sig`), constant-time compare,

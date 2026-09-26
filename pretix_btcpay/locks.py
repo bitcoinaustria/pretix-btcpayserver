@@ -33,14 +33,27 @@ class Busy(Exception):
 _held = threading.local()
 
 
+def _release(ident) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_unlock(%s, %s)", list(ident))
+        if not cursor.fetchone()[0]:
+            raise DatabaseError(f"advisory lock {ident} was not held by this session")
+
+
 @contextmanager
 def advisory_lock(space: int, key: int, wait: float = 0, busy: type[Exception] = Busy):
-    """Hold the lock (``space``, ``key``) for the block; reentrant within a thread."""
+    """Hold the lock (``space``, ``key``) for the block; reentrant within a thread and its database session."""
     held = getattr(_held, "keys", None)
     if held is None:
-        held = _held.keys = set()
+        held = _held.keys = {}
     ident = (space, int(key) % 2 ** 31)
-    if connection.vendor != "postgresql" or ident in held:
+    if connection.vendor != "postgresql":
+        yield
+        return
+    connection.ensure_connection()
+    session = connection.connection
+    # Held by an outer block of this thread, on this very session; after a reconnect it is gone and taken again.
+    if held.get(ident) is session:
         yield
         return
     in_transaction = connection.in_atomic_block
@@ -54,15 +67,20 @@ def advisory_lock(space: int, key: int, wait: float = 0, busy: type[Exception] =
             if time.monotonic() >= until:
                 raise busy()
             time.sleep(0.2)
-    held.add(ident)
+    outer = held.get(ident)
+    held[ident] = session
     try:
         yield
     finally:
-        held.discard(ident)
-        if not in_transaction:
+        if outer is None:
+            held.pop(ident, None)
+        else:
+            held[ident] = outer
+        if not in_transaction and connection.connection is session:
             try:
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT pg_advisory_unlock(%s, %s)", list(ident))
+                _release(ident)
             except DatabaseError:
-                # A broken connection gives its locks up when it closes.
-                logger.warning("BTCPay: could not release lock %s", ident, exc_info=True)
+                # Not sure it is released: end the session, which releases every lock it holds, rather than leave a
+                # lock behind on a connection that pretix keeps open for the next request.
+                logger.warning("BTCPay: could not release lock %s, closing the connection", ident, exc_info=True)
+                connection.close()

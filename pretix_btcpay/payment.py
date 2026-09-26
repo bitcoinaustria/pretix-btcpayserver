@@ -8,7 +8,7 @@ from django import forms
 from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import connection, transaction
 from django.template.loader import get_template
 from django.utils.functional import cached_property
 from django.utils.timezone import now
@@ -366,7 +366,11 @@ class BTCPayServer(BasePaymentProvider):
         BTCPay: invalidating could hit a payment that arrives in the same second. Money that still arrives on it is
         picked up by the webhook and the poll and confirms the cancelled payment (see state.decide).
         """
-        if payment.info_data.get("invoice_id") and self.configured:
+        # Look at BTCPay first only outside a transaction. pretix calls this inside its own, often holding the order
+        # row and quota locks (switching the payment method, changing or cancelling an order); talking to BTCPay or
+        # waiting for the order lock there would hold up checkouts. The last webhook or poll has to do then, and
+        # money that still arrives confirms the cancelled payment anyway.
+        if payment.info_data.get("invoice_id") and self.configured and not connection.in_atomic_block:
             try:
                 sync_payment(self, payment, "cancel", wait=5)
             except OrderBusy:
