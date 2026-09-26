@@ -1,0 +1,10 @@
+{% load i18n %}
+{% if info.claim_link %}
+    <dl class="dl-horizontal">
+        <dt>{% trans "BTCPay pull payment" %}</dt>
+        <dd>{{ info.pull_payment_id }}</dd>
+        <dt>{% trans "Claim link for the buyer" %}</dt>
+        <dd><a href="{{ info.claim_link }}" target="_blank" rel="noopener noreferrer">{{ info.claim_link }}</a></dd>
+    </dl>
+    <p class="text-muted">{% trans "Send this link to the buyer. They enter their own Bitcoin address or Lightning invoice there; once BTCPay has paid it out, mark this refund as done." %}</p>
+{% endif %}

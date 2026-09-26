@@ -1,15 +1,26 @@
 {% load i18n %}
-{% if invoice_id %}
+{% if info.invoice_id %}
     <dl class="dl-horizontal">
         <dt>{% trans "BTCPay invoice" %}</dt>
-        <dd>{{ invoice_id }}</dd>
-        {% if status %}
+        <dd><a href="{{ invoice_link }}" target="_blank" rel="noopener noreferrer">{{ info.invoice_id }}</a></dd>
+        {% if invoice %}
             <dt>{% trans "Status" %}</dt>
-            <dd>{{ status.status }}</dd>
+            <dd>{{ invoice.status }}{% if invoice.additionalStatus and invoice.additionalStatus != "None" %} ({{ invoice.additionalStatus }}){% endif %}</dd>
             <dt>{% trans "Amount" %}</dt>
-            <dd>{{ status.amount }} {{ status.currency }}</dd>
+            <dd>{{ invoice.amount }} {{ invoice.currency }}</dd>
             <dt>{% trans "Paid" %}</dt>
-            <dd>{{ status.paidAmount }} {{ status.currency }}</dd>
+            <dd>{{ invoice.paidAmount|default:"0" }} {{ invoice.currency }}</dd>
+        {% elif error %}
+            <dt>{% trans "Status" %}</dt>
+            <dd>{% trans "BTCPay Server could not be reached." %} {% trans "Last known:" %} {{ info.status|default:"–" }}</dd>
+        {% endif %}
+        {% if info.previous_invoices %}
+            <dt>{% trans "Earlier invoices" %}</dt>
+            <dd>{{ info.previous_invoices|join:", " }}</dd>
+        {% endif %}
+        {% if notes %}
+            <dt>{% trans "Needs attention" %}</dt>
+            <dd>{{ notes|join:", " }}</dd>
         {% endif %}
     </dl>
 {% else %}

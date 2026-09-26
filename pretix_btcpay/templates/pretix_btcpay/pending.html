@@ -1,29 +1,31 @@
 {% load i18n %}
 <div class="alert alert-info">
-    <p>{% trans "Your payment is still pending." %}</p>
-    <p>
-        <a class="btn btn-primary" href="{{ checkout_link }}" target="_blank" rel="noopener">
-            {% trans "Open payment page" %}
-        </a>
-    </p>
-    <p class="text-muted">
-        {% trans "The payment page will show you a QR code for the Lightning Network and, if enabled, an on-chain address. This page refreshes automatically once the payment arrives." %}
-    </p>
+    {% if seen %}
+        <p>{% trans "Your payment has arrived and is waiting for confirmation by the Bitcoin network. This usually takes about ten minutes; you do not have to do anything. Your order stays reserved in the meantime." %}</p>
+    {% else %}
+        <p>{% trans "Your payment is still pending." %}</p>
+        {% if pay_url %}
+            <p><a class="btn btn-primary" href="{{ pay_url }}">{% trans "Pay now" %}</a></p>
+        {% endif %}
+        <p class="text-muted">{% trans "The payment page shows a QR code for the Lightning Network and an on-chain address. This page updates on its own once the payment arrives." %}</p>
+    {% endif %}
 </div>
 <script>
 (function () {
     var statusUrl = "{{ status_url|escapejs }}";
-    setInterval(function () {
-        fetch(statusUrl, {cache: "no-store"})
-            .then(function (r) {
-                return r.json();
-            })
+    var initial = "{{ payment.state|escapejs }}";
+    var tries = 0;
+    function check() {
+        tries += 1;
+        fetch(statusUrl, {cache: "no-store", credentials: "same-origin"})
+            .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (d) {
-                if (d && d.paid === true) {
-                    window.location.reload();
-                }
+                if (d && (d.paid === true || d.state !== initial)) { window.location.reload(); return; }
+                // Every 5 seconds for 10 minutes, then every 30 seconds: the page may stay open for a long time.
+                setTimeout(check, tries < 120 ? 5000 : 30000);
             })
-            .catch(function () {});
-    }, 5000);
+            .catch(function () { setTimeout(check, 30000); });
+    }
+    setTimeout(check, 5000);
 })();
 </script>
