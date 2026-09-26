@@ -1,0 +1,226 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: pretix-btcpayserver\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: de_Informal\n"
+
+msgid "BTCPay Server"
+msgstr "BTCPay Server"
+
+msgid "Bitcoin / Lightning Network"
+msgstr "Bitcoin / Lightning Network"
+
+msgid "You have not yet configured your BTCPay Server URL, API key or store ID."
+msgstr "Die Adresse von BTCPay Server, der API-Schlüssel oder die Store-ID fehlen noch."
+
+msgid "BTCPay Server URL"
+msgstr "Adresse von BTCPay Server"
+
+msgid "The base URL of your BTCPay Server instance, e.g. https://btcpay.example.com"
+msgstr "Die Adresse deiner BTCPay-Server-Instanz, etwa https://btcpay.example.com"
+
+msgid "BTCPay Server API key"
+msgstr "API-Schlüssel für BTCPay Server"
+
+msgid "A Greenfield API key limited to the receiving store. Required: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices and btcpay.store.webhooks.canmodifywebhooks. Optional: btcpay.store.canmodifyinvoices (invalidate unpaid invoices of cancelled payments) and btcpay.store.cancreatepullpayments (refunds). Nothing else."
+msgstr "Ein Greenfield-API-Schlüssel nur für den empfangenden Store. Nötig: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices und btcpay.store.webhooks.canmodifywebhooks. Optional: btcpay.store.canmodifyinvoices (macht unbezahlte Rechnungen abgebrochener Zahlungen ungültig) und btcpay.store.cancreatepullpayments (Erstattungen). Sonst nichts."
+
+msgid "Store ID"
+msgstr "Store-ID"
+
+msgid "The ID of the BTCPay Server store that receives the payments."
+msgstr "Die ID des Stores in BTCPay Server, der die Zahlungen empfängt."
+
+msgid "Confirmations before an on-chain payment counts"
+msgstr "Bestätigungen, bis eine On-Chain-Zahlung zählt"
+
+msgid "1 confirmation (recommended)"
+msgstr "1 Bestätigung (empfohlen)"
+
+msgid "2 confirmations"
+msgstr "2 Bestätigungen"
+
+msgid "6 confirmations"
+msgstr "6 Bestätigungen"
+
+msgid "Lightning payments count at once. Zero confirmations are not offered: an unconfirmed transaction can still be replaced."
+msgstr "Lightning-Zahlungen zählen sofort. Null Bestätigungen gibt es nicht: Eine unbestätigte Transaktion lässt sich noch ersetzen."
+
+msgid "Invoice expiration (minutes)"
+msgstr "Laufzeit einer Rechnung (Minuten)"
+
+msgid "An invoice never runs longer than the payment deadline of its order, and not longer than this. The exchange rate is fixed for as long as the invoice runs."
+msgstr "Eine Rechnung läuft nie länger als die Zahlungsfrist ihrer Bestellung und nicht länger als hier angegeben. So lange gilt der Kurs."
+
+msgid "Payment method name"
+msgstr "Name der Zahlungsart"
+
+msgid "The name of the payment method that is shown to your customers during checkout."
+msgstr "So heißt die Zahlungsart für deine Kundinnen und Kunden beim Bezahlen."
+
+msgid "The BTCPay Server URL has to use https."
+msgstr "Die Adresse von BTCPay Server muss mit https beginnen."
+
+msgid "BTCPay Server did not accept this API key at this URL."
+msgstr "BTCPay Server unter dieser Adresse hat den API-Schlüssel nicht angenommen."
+
+msgid "The API key lacks these permissions for the store: {perms}"
+msgstr "Dem API-Schlüssel fehlen diese Rechte für den Store: {perms}"
+
+msgid "The API key has more rights than it needs ({perms}). Please create a key with only the permissions listed below."
+msgstr "Der API-Schlüssel hat mehr Rechte, als er braucht ({perms}). Bitte einen Schlüssel nur mit den unten genannten Rechten anlegen."
+
+msgid "The store ID is unknown to BTCPay Server, or the key is not allowed to manage its webhooks."
+msgstr "BTCPay Server kennt die Store-ID nicht, oder der Schlüssel darf dessen Webhooks nicht verwalten."
+
+msgid "This payment has expired. Please start the payment again."
+msgstr "Diese Zahlung ist abgelaufen. Bitte starte die Zahlung neu."
+
+msgid "We had trouble creating your payment. Please try again and get in touch with us if this problem persists."
+msgstr "Wir konnten deine Zahlung nicht anlegen. Bitte versuch es noch einmal und melde dich bei uns, wenn das Problem bleibt."
+
+msgid "To pay for your order, please visit the following page: {url}"
+msgstr "Bezahlen kannst du deine Bestellung hier: {url}"
+
+msgid "This payment has already been received."
+msgstr "Diese Zahlung ist schon angekommen."
+
+msgid "This payment is already being processed and can not be canceled any more."
+msgstr "Diese Zahlung ist schon unterwegs und lässt sich nicht mehr abbrechen."
+
+msgid "Part of this payment has already arrived. Please get in touch with us."
+msgstr "Ein Teil dieser Zahlung ist schon angekommen. Bitte melde dich bei uns."
+
+msgid "This payment has no BTCPay invoice to refund."
+msgstr "Zu dieser Zahlung gibt es keine BTCPay-Rechnung, die sich erstatten ließe."
+
+msgid "The API key is not allowed to create refunds (btcpay.store.cancreatepullpayments)."
+msgstr "Der API-Schlüssel darf keine Erstattungen anlegen (btcpay.store.cancreatepullpayments)."
+
+msgid "BTCPay Server could not create the refund: please do it in BTCPay."
+msgstr "BTCPay Server konnte die Erstattung nicht anlegen: bitte direkt in BTCPay erstatten."
+
+msgid "Unexpected answer from BTCPay Server."
+msgstr "Unerwartete Antwort von BTCPay Server."
+
+msgid "Refund for order {code}"
+msgstr "Erstattung für Bestellung {code}"
+
+msgid "A BTCPay invoice was created."
+msgstr "Eine BTCPay-Rechnung wurde angelegt."
+
+msgid "BTCPay has seen the payment; it is waiting for confirmation."
+msgstr "BTCPay hat die Zahlung gesehen und wartet auf die Bestätigung."
+
+msgid "BTCPay received only part of the amount. The rest has to be returned from BTCPay."
+msgstr "BTCPay hat nur einen Teil des Betrags erhalten. Das Erhaltene muss aus BTCPay zurückgezahlt werden."
+
+msgid "BTCPay received more than the amount. The difference has to be returned."
+msgstr "BTCPay hat mehr als den Betrag erhalten. Die Differenz muss zurückgezahlt werden."
+
+msgid "BTCPay received the payment after the invoice expired. Check in BTCPay; marking the invoice as settled there confirms the payment."
+msgstr "BTCPay hat die Zahlung erst nach Ablauf der Rechnung erhalten. Bitte in BTCPay prüfen; wird die Rechnung dort als bezahlt markiert, gilt die Zahlung als bestätigt."
+
+msgid "A BTCPay administrator set the invoice status by hand."
+msgstr "Jemand hat den Status der Rechnung in BTCPay von Hand gesetzt."
+
+msgid "BTCPay marked an invoice as invalid after pretix had confirmed the payment. Please check this order by hand."
+msgstr "BTCPay hat eine Rechnung als ungültig markiert, nachdem pretix die Zahlung bestätigt hatte. Bitte diese Bestellung von Hand prüfen."
+
+msgid "BTCPay settled an invoice of a payment that was already refunded."
+msgstr "BTCPay hat eine Rechnung zu einer schon erstatteten Zahlung als bezahlt gemeldet."
+
+msgid "The order could not be kept reserved while the payment confirms."
+msgstr "Die Bestellung ließ sich nicht reserviert halten, bis die Zahlung bestätigt ist."
+
+msgid "The payment was dropped; the order has its old payment deadline again."
+msgstr "Die Zahlung kam nie an; die Bestellung hat wieder ihre alte Zahlungsfrist."
+
+msgid "Another open BTCPay payment of this paid order was cancelled."
+msgstr "Eine weitere offene BTCPay-Zahlung dieser bezahlten Bestellung wurde abgebrochen."
+
+msgid "A BTCPay invoice did not match its payment and was ignored."
+msgstr "Eine BTCPay-Rechnung passte nicht zu ihrer Zahlung und wurde übergangen."
+
+msgid "A BTCPay refund was created; the buyer has to claim it."
+msgstr "Eine Erstattung wurde in BTCPay angelegt; die Käuferin oder der Käufer muss sie abholen."
+
+msgid "The BTCPay webhook was registered."
+msgstr "Der Webhook in BTCPay wurde eingerichtet."
+
+msgid "Your payment has arrived and is waiting for confirmation by the Bitcoin network. This usually takes about ten minutes; you do not have to do anything. Your order stays reserved in the meantime."
+msgstr "Deine Zahlung ist angekommen und wartet auf die Bestätigung im Bitcoin-Netz. Das dauert meist etwa zehn Minuten; du musst nichts tun. Deine Bestellung bleibt so lange reserviert."
+
+msgid "Your payment is still pending."
+msgstr "Deine Zahlung steht noch aus."
+
+msgid "Pay now"
+msgstr "Jetzt bezahlen"
+
+msgid "The payment page shows a QR code for the Lightning Network and an on-chain address. This page updates on its own once the payment arrives."
+msgstr "Die Zahlungsseite zeigt einen QR-Code für das Lightning Network und eine On-Chain-Adresse. Diese Seite aktualisiert sich von selbst, sobald die Zahlung ankommt."
+
+msgid "BTCPay invoice"
+msgstr "BTCPay-Rechnung"
+
+msgid "Status"
+msgstr "Status"
+
+msgid "Amount"
+msgstr "Betrag"
+
+msgid "Paid"
+msgstr "Bezahlt"
+
+msgid "BTCPay Server could not be reached."
+msgstr "BTCPay Server war nicht erreichbar."
+
+msgid "Last known:"
+msgstr "Zuletzt bekannt:"
+
+msgid "Earlier invoices"
+msgstr "Frühere Rechnungen"
+
+msgid "Needs attention"
+msgstr "Braucht Aufmerksamkeit"
+
+msgid "No BTCPay invoice has been created for this payment yet."
+msgstr "Zu dieser Zahlung gibt es noch keine BTCPay-Rechnung."
+
+msgid "BTCPay pull payment"
+msgstr "BTCPay-Pull-Payment"
+
+msgid "Claim link for the buyer"
+msgstr "Link zum Abholen für die Käuferin oder den Käufer"
+
+msgid "Send this link to the buyer. They enter their own Bitcoin address or Lightning invoice there; once BTCPay has paid it out, mark this refund as done."
+msgstr "Diesen Link an die Käuferin oder den Käufer schicken. Dort trägt sie oder er eine eigene Bitcoin-Adresse oder Lightning-Rechnung ein; sobald BTCPay ausgezahlt hat, die Erstattung als erledigt markieren."
+
+msgid "Payments go to a BTCPay Server store over the Greenfield API. Create an API key in BTCPay under Account → API keys, limited to the receiving store, with exactly these permissions:"
+msgstr "Die Zahlungen gehen über die Greenfield-API an einen Store in BTCPay Server. Den API-Schlüssel in BTCPay unter „Account → API keys“ anlegen, beschränkt auf den empfangenden Store, mit genau diesen Rechten:"
+
+msgid "required"
+msgstr "nötig"
+
+msgid "optional: invalidates unpaid invoices when a buyer switches the payment method"
+msgstr "optional: macht unbezahlte Rechnungen ungültig, wenn jemand die Zahlungsart wechselt"
+
+msgid "optional: refunds"
+msgstr "optional: Erstattungen"
+
+msgid "Saving checks the key and registers this webhook on the store:"
+msgstr "Beim Speichern wird der Schlüssel geprüft und dieser Webhook im Store eingerichtet:"
+
+msgid "registered"
+msgstr "eingerichtet"
+
+msgid "If webhooks get lost, the periodic task of pretix (pretix cron) asks BTCPay about open invoices every few minutes. Make sure it runs."
+msgstr "Gehen Webhooks verloren, fragt die regelmäßige Aufgabe von pretix (pretix cron) alle paar Minuten bei BTCPay nach offenen Rechnungen. Sie muss laufen."
+
+msgid "You pay in Bitcoin, over the Lightning Network or on-chain. After you submit your order, you are taken to the payment page."
+msgstr "Du zahlst in Bitcoin, über das Lightning Network oder on-chain. Nach dem Bestellen kommst du zur Zahlungsseite."
+
+msgid "After you submit your order, you are taken to the payment page, where you can pay over the Lightning Network or on-chain. Your order is paid as soon as the payment is confirmed."
+msgstr "Nach dem Bestellen kommst du zur Zahlungsseite; dort zahlst du über das Lightning Network oder on-chain. Bezahlt ist deine Bestellung, sobald die Zahlung bestätigt ist."
