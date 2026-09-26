@@ -10,7 +10,7 @@ from pretix.base.models import Order, OrderPayment
 from pretix.base.services.locking import LockTimeoutException
 
 from .api import WEBHOOK_EVENTS, BTCPayAPI, BTCPayError
-from .sync import PROVIDER, InvoiceMismatch, apply, event_ref, is_surplus
+from .sync import PROVIDER, InvoiceMismatch, OrderBusy, apply, event_ref, is_surplus
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ def webhook(request, *args, **kwargs):
         logger.warning("BTCPay: invoice %s does not match payment %s: %s", invoice_id, payment.full_id, e)
         order.log_action("pretix_btcpay.mismatch", data={"invoice_id": invoice_id, "reason": str(e)})
         return HttpResponse(status=200)
-    except LockTimeoutException:
+    except (LockTimeoutException, OrderBusy):
         return HttpResponse("Busy, please retry", status=503)
     return HttpResponse(status=200)
 

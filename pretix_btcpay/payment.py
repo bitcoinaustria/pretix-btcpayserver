@@ -24,7 +24,7 @@ from pretix.multidomain.urlreverse import eventreverse, eventreverse_absolute
 
 from . import state
 from .api import BTCPayAPI, BTCPayError, WEBHOOK_EVENTS, is_own_link, missing_permissions
-from .sync import PROVIDER, event_ref, is_surplus, sync_payment
+from .sync import PROVIDER, OrderBusy, event_ref, is_surplus, sync_payment
 
 logger = logging.getLogger(__name__)
 
@@ -123,18 +123,29 @@ class BTCPayServer(BasePaymentProvider):
 
     def promote_webhook(self) -> None:
         """Make a staged webhook the active one once URL and store in the saved settings are the ones it was made for."""
-        raw = self.settings.get("pending_webhook")
-        if not raw:
+        if not self.settings.get("pending_webhook"):
             return
+        lease = f"pretix_btcpay_webhook_{self.event.pk}"
+        token = secrets.token_hex(8)
+        if getattr(settings, "REAL_CACHE_USED", False) and not cache.add(lease, token, timeout=30):
+            return  # a registration or another promotion is running; the next call does it
         try:
-            pending = json.loads(raw)
-        except ValueError:
-            del self.settings["pending_webhook"]
-            return
-        if (pending.get("url"), pending.get("store_id")) == (str(self.settings.url or "").rstrip("/"), str(self.settings.store_id or "")):
-            self.settings.set("webhook_id", pending["id"])
-            self.settings.set("webhook_secret", pending["secret"])
-            del self.settings["pending_webhook"]
+            self.event.settings.flush()  # this Event may hold settings from before the last save
+            raw = self.settings.get("pending_webhook")
+            try:
+                pending = json.loads(raw) if raw else None
+            except ValueError:
+                pending = None
+            if not pending:
+                return
+            if (pending.get("url"), pending.get("store_id")) == (str(self.settings.url or "").rstrip("/"), str(self.settings.store_id or "")):
+                self.settings.set("webhook_id", pending["id"])
+                self.settings.set("webhook_secret", pending["secret"])
+                if self.settings.get("pending_webhook") == raw:
+                    del self.settings["pending_webhook"]
+        finally:
+            if cache.get(lease) == token:
+                cache.delete(lease)
 
     def webhook_secrets(self) -> list[str]:
         """The secret to check webhooks with; a staged webhook for the saved URL and store is promoted first."""
@@ -153,8 +164,8 @@ class BTCPayServer(BasePaymentProvider):
                 help_text=_(
                     "A Greenfield API key limited to the receiving store, with exactly these permissions: "
                     "btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices and "
-                    "btcpay.store.webhooks.canmodifywebhooks, optionally "
-                    "btcpay.store.cancreatenonapprovedpullpayments for refunds. Keys with more are refused."
+                    "btcpay.store.webhooks.canmodifywebhooks, and btcpay.store.cancreatenonapprovedpullpayments "
+                    "only if refunds are created in BTCPay. Keys with more are refused."
                 ),
             )),
             ("store_id", forms.CharField(
@@ -177,6 +188,13 @@ class BTCPayServer(BasePaymentProvider):
                 help_text=_("An invoice never runs longer than the payment deadline of its order, and not longer "
                             "than this. The exchange rate is fixed for as long as the invoice runs."),
                 min_value=1, max_value=1440, initial=15, required=False,
+            )),
+            ("refunds", forms.BooleanField(
+                label=_("Create refunds in BTCPay"),
+                help_text=_("Off by default: refunds are then done by hand in BTCPay and recorded in pretix. On, a "
+                            "refund in pretix creates a BTCPay pull payment that the buyer claims and someone approves "
+                            "in BTCPay; the API key then also needs btcpay.store.cancreatenonapprovedpullpayments."),
+                required=False,
             )),
             ("public_name", I18nFormField(
                 label=_("Payment method name"),
@@ -213,8 +231,8 @@ class BTCPayServer(BasePaymentProvider):
         if extra:
             raise ValidationError(_("The API key has more rights than it needs ({perms}). Please create a key with only "
                                     "the permissions listed below.").format(perms=", ".join(extra)))
-        if optional:
-            logger.info("BTCPay: key for %s lacks optional permissions %s", event_ref(self.event), optional)
+        if cleaned_data.get(f"payment_{self.identifier}_refunds") and optional:
+            raise ValidationError(_("Refunds in BTCPay need the permission btcpay.store.cancreatenonapprovedpullpayments."))
         # Register the webhook now, not at the first sale; this also proves store and key fit together.
         fresh = (str(self.settings.url or ""), str(self.settings.store_id or "")) != (str(url), str(store_id))
         try:
@@ -284,7 +302,10 @@ class BTCPayServer(BasePaymentProvider):
             logger.error("BTCPay: no webhook registered for %s; save the payment settings once", event_ref(self.event))
         try:
             if payment.info_data.get("invoice_id"):
-                sync_payment(self, payment, "checkout")
+                try:
+                    sync_payment(self, payment, "checkout", wait=5)
+                except OrderBusy:
+                    pass  # a webhook is applying it right now; the state below is read fresh
             with transaction.atomic():
                 locked = OrderPayment.objects.select_for_update(of=OF_SELF).get(pk=payment.pk)
                 info = locked.info_data
@@ -348,7 +369,9 @@ class BTCPayServer(BasePaymentProvider):
         """
         if payment.info_data.get("invoice_id") and self.configured:
             try:
-                sync_payment(self, payment, "cancel")
+                sync_payment(self, payment, "cancel", wait=5)
+            except OrderBusy:
+                logger.info("BTCPay: order of %s busy while cancelling; the poll catches up", payment.full_id)
             except BTCPayError:
                 logger.warning("BTCPay: could not check the invoice of %s before cancelling", payment.full_id)
         with transaction.atomic():
@@ -405,7 +428,8 @@ class BTCPayServer(BasePaymentProvider):
     # (only for money we have to return, such as double or over payments).
 
     def payment_refund_supported(self, payment: OrderPayment) -> bool:
-        return bool(payment.info_data.get("invoice_id")) and payment.info_data.get("status") == state.SETTLED
+        return (self.settings.get("refunds", as_type=bool, default=False) and bool(payment.info_data.get("invoice_id"))
+                and payment.info_data.get("status") == state.SETTLED)
 
     def payment_partial_refund_supported(self, payment: OrderPayment) -> bool:
         return self.payment_refund_supported(payment)
@@ -419,9 +443,12 @@ class BTCPayServer(BasePaymentProvider):
         # Note the intent first: if anything goes wrong after the request left, BTCPay may have created the claim.
         # pretix runs this inside its own transaction, which a crash rolls back, so also outside the database: in the
         # log and in the shared cache, where a second refund of the same invoice looks for it.
+        # A successful refund keeps its note too: if pretix rolls back after BTCPay created the claim, the retry gets
+        # a new refund id and must not create a second claim. So every earlier refund of this invoice, finished or
+        # not, sends the next one to a human, who checks BTCPay first.
         intent = f"pretix_btcpay_refund_intent_{refund.order.pk}_{invoice_id}"
-        earlier = cache.get(intent)
-        if earlier and earlier != name:
+        earlier = cache.get(intent) or (name if refund.info_data.get("in_flight") or refund.info_data.get("pull_payment_id") else None)
+        if earlier:
             refund.info_data = {"ambiguous": True, "name": name, "earlier": earlier}
             refund.state = OrderRefund.REFUND_STATE_TRANSIT
             refund.save(update_fields=["info", "state"])
@@ -457,7 +484,7 @@ class BTCPayServer(BasePaymentProvider):
         link = pull.get("viewLink") or ""
         if not pull.get("id") or not is_own_link(self.client.url, link):
             return ambiguous()
-        cache.delete(intent)
+        cache.set(intent, f"{name} ({pull.get('id')})", timeout=30 * 24 * 3600)
         refund.info_data = {"pull_payment_id": pull.get("id"), "claim_link": link, "name": name}
         # The buyer still has to claim it and the team to approve it in BTCPay; it is done once BTCPay paid it out.
         refund.state = OrderRefund.REFUND_STATE_TRANSIT

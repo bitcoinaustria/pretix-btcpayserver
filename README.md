@@ -12,18 +12,23 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
 - pretix 2026.7 (tested), Python ≥ 3.11
 - BTCPay Server 2.x (tested with 2.3.9) with a store that has an on-chain wallet and, optionally, Lightning
 - `pretix cron` running regularly (every few minutes), as pretix recommends anyway
+- Redis (or memcached) as pretix' cache, as for any pretix with more than one worker: the plugin serialises work
+  on an order and webhook registration through it. Without a shared cache these locks do nothing.
 
 ## Setup
 
 1. In BTCPay, create an API key under *Account → API keys*, limited to the receiving store, with exactly:
    - required: `btcpay.store.cancreateinvoice`, `btcpay.store.canviewinvoices`, `btcpay.store.webhooks.canmodifywebhooks`
-   - optional: `btcpay.store.cancreatenonapprovedpullpayments` (refunds; someone approves each payout in BTCPay)
+   - optional: `btcpay.store.cancreatenonapprovedpullpayments`, only if refunds should be created in BTCPay
+     (see step 2)
 
    Any other permission, or one for another store, is refused. `btcpay.store.cancreatepullpayments` in particular:
    BTCPay's refund endpoint takes any amount and would approve some claims on its own, so a leaked key could pay
    itself out.
 2. Enable the plugin in pretix and fill in *Settings → Payment → BTCPay Server*: URL (https), API key, store ID,
-   the number of confirmations (1, 2 or 6; zero is not offered) and the invoice expiration.
+   the number of confirmations (1, 2 or 6; zero is not offered), the invoice expiration and whether refunds are
+   created in BTCPay. That is off by default: the team then refunds by hand in BTCPay and records it in pretix.
+   Switched on, the key needs the optional permission, and every refund still waits for someone to approve it.
 3. Saving checks the key and registers the webhook on the store with a secret the plugin generates. There is one
    webhook per pretix event: `https://<pretix>/<organizer>/<event>/btcpay/webhook/`. Buyers never register it; without
    a webhook the poll still finds every payment, a minute later. A new store or URL gets its webhook staged and only
@@ -58,13 +63,19 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
   finishes it; if the seats are really gone, the order is flagged instead.
 - Partial and late payments, and money on an expired or invalid invoice, are logged on the order ("Needs attention"
   in the payment details) for the team to handle in BTCPay. Refunds create a BTCPay pull payment the buyer claims with
-  their own address and someone approves in BTCPay. The intent is stored before the request; a refund whose
-  creation got no clear answer is marked for a human instead of being retried.
-- The poll asks about invoices that are due, longest unchecked first, at most 300 per run: open ones every minute,
-  settled or closed ones pretix has not caught up with every few minutes, the rest every half hour while BTCPay still
-  watches them (late money, admin changes) and uncounted closed ones every six hours for half a year. It keeps running
-  when the payment method is disabled. It loads the plugin's payments of that half year each run, which is fine for
-  thousands of payments, not for millions.
+  their own address and someone approves in BTCPay (only if refunds are switched on). Each refund is noted in the
+  shared cache before the request and stays noted for 30 days, because pretix runs refunds inside a transaction that
+  a crash rolls back even after BTCPay created the claim. A refund without a clear answer, and any further refund of
+  the same invoice in that time, is marked for a human instead of being sent: they check BTCPay and create it there.
+- Webhook, poll and checkout work on an order one at a time (a lease in the shared cache, not a database lock, so it
+  cannot deadlock with pretix' own quota locks). A webhook that finds the order busy gets a 503 and BTCPay delivers
+  it again.
+- The poll asks about invoices that are due, longest unchecked first, at most 300 and 45 seconds per run (the next
+  run continues): open ones every minute, settled or closed ones pretix has not caught up with every few minutes,
+  the rest every half hour while BTCPay still watches them or money beyond the amount is not booked yet, and
+  uncounted closed ones every six hours for half a year. Refunded and failed payments are included, and it keeps
+  running when the payment method is disabled. It loads the plugin's payments of that half year each run, which is
+  fine for thousands of payments, not for millions.
 - The pending page polls a status endpoint that needs the order secret and only reads the database.
 
 ## Security notes
@@ -101,11 +112,12 @@ Compared with upstream 0.1.1:
 - A periodic task polls invoices that may still change, so a lost webhook does not leave a paid order unpaid.
 - The webhook is registered when the settings are saved, with our own secret, under a lease; not lazily at the first
   sale, where concurrent buyers could end up with a secret that belongs to a deleted webhook.
-- API keys are checked against an allowlist of four store permissions.
+- API keys are checked against an allowlist: three required store permissions, one optional for refunds, nothing else.
 - Unconfirmed payments keep the order reserved, and a dropped one gives the seats back.
 - Invoices expire with the order at the latest, with explicit speed policy and zero payment tolerance.
 - Invoices are only created in `execute_payment`; emails link to pretix' own payment page instead of creating
   invoices while rendering.
 - The status endpoint needs the order secret and does not call BTCPay.
 - Absolute redirect URL back to the order, links only to the configured BTCPay host.
-- Refunds via pull payments, cancel handling, German translations (formal and informal), tests.
+- Refunds via pull payments that someone approves, off by default; cancel handling, German translations (formal and
+  informal), tests.

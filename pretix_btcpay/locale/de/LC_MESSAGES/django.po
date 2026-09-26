@@ -6,8 +6,20 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Language: de\n"
 
-msgid "A Greenfield API key limited to the receiving store, with exactly these permissions: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices and btcpay.store.webhooks.canmodifywebhooks, optionally btcpay.store.cancreatenonapprovedpullpayments for refunds. Keys with more are refused."
-msgstr "Ein Greenfield-API-Schlüssel nur für den empfangenden Store, mit genau diesen Rechten: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices und btcpay.store.webhooks.canmodifywebhooks, für Erstattungen zusätzlich btcpay.store.cancreatenonapprovedpullpayments. Schlüssel mit mehr Rechten werden abgelehnt."
+msgid "A Greenfield API key limited to the receiving store, with exactly these permissions: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices and btcpay.store.webhooks.canmodifywebhooks, and btcpay.store.cancreatenonapprovedpullpayments only if refunds are created in BTCPay. Keys with more are refused."
+msgstr "Ein Greenfield-API-Schlüssel nur für den empfangenden Store, mit genau diesen Rechten: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices und btcpay.store.webhooks.canmodifywebhooks, dazu btcpay.store.cancreatenonapprovedpullpayments nur, wenn Erstattungen in BTCPay angelegt werden. Schlüssel mit mehr Rechten werden abgelehnt."
+
+msgid "Create refunds in BTCPay"
+msgstr "Erstattungen in BTCPay anlegen"
+
+msgid "Off by default: refunds are then done by hand in BTCPay and recorded in pretix. On, a refund in pretix creates a BTCPay pull payment that the buyer claims and someone approves in BTCPay; the API key then also needs btcpay.store.cancreatenonapprovedpullpayments."
+msgstr "Standardmäßig aus: Erstattungen macht das Team dann von Hand in BTCPay und trägt sie in pretix ein. An: Eine Erstattung in pretix legt ein Pull Payment in BTCPay an, das die Käuferin oder der Käufer abholt und jemand in BTCPay freigibt; der API-Schlüssel braucht dann auch btcpay.store.cancreatenonapprovedpullpayments."
+
+msgid "Refunds in BTCPay need the permission btcpay.store.cancreatenonapprovedpullpayments."
+msgstr "Erstattungen in BTCPay brauchen das Recht btcpay.store.cancreatenonapprovedpullpayments."
+
+msgid "only if refunds are created in BTCPay: someone approves each payout there"
+msgstr "nur, wenn Erstattungen in BTCPay angelegt werden: Jede Auszahlung gibt dort jemand frei"
 
 msgid "The API key is not allowed to create refunds (btcpay.store.cancreatenonapprovedpullpayments)."
 msgstr "Der API-Schlüssel darf keine Erstattungen anlegen (btcpay.store.cancreatenonapprovedpullpayments)."
@@ -29,9 +41,6 @@ msgstr "Die Bestellung wurde nachträglich als bezahlt markiert, passend zu ihre
 
 msgid "The BTCPay payment arrived, but the order could not be marked paid because its seats are gone. Add quota or return the money."
 msgstr "Die BTCPay-Zahlung ist angekommen, aber die Bestellung ließ sich nicht als bezahlt markieren, weil ihre Plätze vergeben sind. Kontingent erhöhen oder das Geld zurückzahlen."
-
-msgid "optional: refunds, which someone approves in BTCPay"
-msgstr "optional: Erstattungen, die jemand in BTCPay freigibt"
 
 msgid "Keys with any other permission, or for other stores, are refused: they could spend or change more than this plugin needs."
 msgstr "Schlüssel mit anderen Rechten oder für andere Stores werden abgelehnt: Mit ihnen ließe sich mehr ausgeben oder ändern, als das Plugin braucht."

@@ -12,10 +12,15 @@ order as overpaid and the surplus can be refunded without touching the ticket's 
 """
 import json
 import logging
+import secrets
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
+from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Sum
 from django.utils.timezone import now
@@ -42,6 +47,42 @@ WINDOW = timedelta(days=180)
 
 class InvoiceMismatch(Exception):
     """The invoice does not belong to the payment it claims to belong to."""
+
+
+class OrderBusy(Exception):
+    """Another worker is applying an invoice to a payment of this order right now."""
+
+
+_held = threading.local()
+
+
+@contextmanager
+def order_lock(order_id: int, wait: float = 0):
+    """
+    One worker at a time per order for everything that changes its BTCPay payments: the webhook, the poll, the
+    checkout and cancelling. A lease in the shared cache, not a database lock, so it cannot cross pretix' own quota
+    and order locks. Reentrant within a thread (cancelling a sibling from inside apply). ``wait`` seconds to wait for
+    it, then OrderBusy. Needs Redis or memcached, which pretix needs in production anyway; without, there is no lease.
+    """
+    held = getattr(_held, "orders", None)
+    if held is None:
+        held = _held.orders = set()
+    if order_id in held or not getattr(settings, "REAL_CACHE_USED", False):
+        yield
+        return
+    key, token = f"pretix_btcpay_order_{order_id}", secrets.token_hex(8)
+    until = time.monotonic() + wait
+    while not cache.add(key, token, timeout=120):
+        if time.monotonic() >= until:
+            raise OrderBusy()
+        time.sleep(0.2)
+    held.add(order_id)
+    try:
+        yield
+    finally:
+        held.discard(order_id)
+        if cache.get(key) == token:
+            cache.delete(key)
 
 
 def event_ref(event) -> str:
@@ -185,10 +226,10 @@ def _catch_up_order(payment: OrderPayment, invoice: dict) -> None:
     if _net_paid(order) < order.total:
         return
     try:
+        # apply holds the order lock, so no other webhook, poll or checkout confirms or catches up at the same time;
+        # read the order fresh anyway before marking it paid. pretix takes its quota locks inside.
         with transaction.atomic():
-            # The webhook and the poll (and another payment of the same order) may all get here: the order row makes
-            # them take turns, and the next one finds the order paid.
-            order = Order.objects.select_for_update(of=OF_SELF).get(pk=payment.order_id)
+            order = Order.objects.get(pk=payment.order_id)
             net = _net_paid(order)
             if order.status not in (Order.STATUS_PENDING, Order.STATUS_EXPIRED) or net < order.total:
                 return
@@ -217,7 +258,8 @@ def _confirmed_amount(provider, invoice: dict) -> Decimal | None:
         rate = _decimal(method.get("rate"))
         for p in method.get("payments") or []:
             if p.get("status") == "Settled":
-                total += _decimal(p.get("value")) * rate
+                # A network fee the buyer paid on top is not money for the order.
+                total += (_decimal(p.get("value")) - _decimal(p.get("fee"))) * rate
             elif p.get("status") != "Invalid":
                 return None
     return total.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
@@ -273,9 +315,15 @@ def _close_siblings(payment: OrderPayment) -> None:
             logger.exception("BTCPay: could not cancel open payment %s of paid order", other.full_id)
 
 
-def apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
-    """Apply the decision for ``invoice`` to ``payment``. Returns the action taken."""
+def apply(provider, payment: OrderPayment, invoice: dict, source: str, wait: float = 0) -> str:
+    """Apply the decision for ``invoice`` to ``payment``, one worker per order at a time. Returns the action taken."""
     check_invoice(payment, invoice, str(provider.settings.store_id))
+    with order_lock(payment.order_id, wait=wait):
+        payment.refresh_from_db()
+        return _apply(provider, payment, invoice, source)
+
+
+def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
     paid = _decimal(invoice.get("paidAmount"))
     _update_info(payment, status=invoice.get("status"), additional_status=invoice.get("additionalStatus"),
                  paid_amount=str(paid), monitoring_until=invoice.get("monitoringExpiration"), checked=int(time.time()))
@@ -314,13 +362,13 @@ def apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
     return decision.action
 
 
-def sync_payment(provider, payment: OrderPayment, source: str) -> str | None:
+def sync_payment(provider, payment: OrderPayment, source: str, wait: float = 0) -> str | None:
     """Read the payment's invoice from BTCPay and apply it."""
     invoice_id = payment.info_data.get("invoice_id")
     if not invoice_id or is_surplus(payment):
         return None
     invoice = provider.client.get_invoice(str(provider.settings.store_id), invoice_id)
-    return apply(provider, payment, invoice, source)
+    return apply(provider, payment, invoice, source, wait=wait)
 
 
 def next_check(payment: OrderPayment, at: datetime) -> float | None:
@@ -344,6 +392,9 @@ def next_check(payment: OrderPayment, at: datetime) -> float | None:
         return checked + CATCH_UP
     if status in (state.EXPIRED, state.INVALID) and _decimal(info.get("paid_amount")) > 0 and not counted:
         return checked + WATCH  # money on a closed invoice, until someone decides in BTCPay
+    if (status == state.SETTLED and payment.state == OrderPayment.PAYMENT_STATE_CONFIRMED
+            and _decimal(info.get("paid_amount")) - payment.amount > _decimal(info.get("surplus_recorded"))):
+        return checked + WATCH  # money beyond the amount that is not booked yet (unconfirmed, or BTCPay did not answer)
     if (monitoring is None or monitoring > at) or payment.created >= at - timedelta(days=2):
         return checked + WATCH  # late money on a settled invoice, a manual change, a lost webhook
     if not counted:
@@ -351,20 +402,20 @@ def next_check(payment: OrderPayment, at: datetime) -> float | None:
     return None
 
 
-def poll(budget: int = 300) -> dict:
+def poll(budget: int = 300, seconds: float = 45) -> dict:
     """
     The fallback for webhooks that never arrived: ask BTCPay about the invoices that are due, longest unchecked
-    first, at most ``budget`` per run. Payments that failed or were cancelled are included, because money can still
-    arrive on their invoice; so are events that stopped selling.
+    first, at most ``budget`` per run. Payments that failed, were cancelled or refunded are included, because money
+    can still arrive on their invoice; so are events that stopped selling.
     """
     from django_scopes import scope, scopes_disabled
 
-    stats = {"due": 0, "checked": 0, "changed": 0, "errors": 0}
+    stats = {"due": 0, "checked": 0, "changed": 0, "errors": 0, "busy": 0}
     at = now()
+    deadline = time.monotonic() + seconds  # the next run picks up where this one stopped, longest unchecked first
     with scopes_disabled():
         candidates = list(
             OrderPayment.objects.filter(provider=PROVIDER, created__gte=at - WINDOW)
-            .exclude(state=OrderPayment.PAYMENT_STATE_REFUNDED)
             .select_related("order", "order__event", "order__event__organizer")
         )
     due = []
@@ -376,7 +427,7 @@ def poll(budget: int = 300) -> dict:
     stats["due"] = len(due)
     providers = {}
     for _, payment in due:
-        if stats["checked"] >= budget:
+        if stats["checked"] >= budget or time.monotonic() > deadline:
             break
         event = payment.order.event
         with scope(organizer=event.organizer):
@@ -394,6 +445,8 @@ def poll(budget: int = 300) -> dict:
                 payment.refresh_from_db()
                 payment.order.refresh_from_db()
                 stats["changed"] += int((payment.state, payment.order.status) != before)
+            except OrderBusy:
+                stats["busy"] += 1  # a webhook is on it right now
             except (BTCPayError, InvoiceMismatch, LockTimeoutException) as e:
                 stats["errors"] += 1
                 _update_info(payment, checked=int(time.time()))  # try the others first next time

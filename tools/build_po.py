@@ -2,8 +2,13 @@
 #   for l in de de_Informal; do msgfmt -o pretix_btcpay/locale/$l/LC_MESSAGES/django.mo pretix_btcpay/locale/$l/LC_MESSAGES/django.po; done
 # de uses the formal "Sie", de_Informal the informal "du", as pretix does. Run from the repository root.
 T = [
- ("A Greenfield API key limited to the receiving store, with exactly these permissions: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices and btcpay.store.webhooks.canmodifywebhooks, optionally btcpay.store.cancreatenonapprovedpullpayments for refunds. Keys with more are refused.",
-  "Ein Greenfield-API-Schlüssel nur für den empfangenden Store, mit genau diesen Rechten: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices und btcpay.store.webhooks.canmodifywebhooks, für Erstattungen zusätzlich btcpay.store.cancreatenonapprovedpullpayments. Schlüssel mit mehr Rechten werden abgelehnt.", None),
+ ("A Greenfield API key limited to the receiving store, with exactly these permissions: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices and btcpay.store.webhooks.canmodifywebhooks, and btcpay.store.cancreatenonapprovedpullpayments only if refunds are created in BTCPay. Keys with more are refused.",
+  "Ein Greenfield-API-Schlüssel nur für den empfangenden Store, mit genau diesen Rechten: btcpay.store.cancreateinvoice, btcpay.store.canviewinvoices und btcpay.store.webhooks.canmodifywebhooks, dazu btcpay.store.cancreatenonapprovedpullpayments nur, wenn Erstattungen in BTCPay angelegt werden. Schlüssel mit mehr Rechten werden abgelehnt.", None),
+ ("Create refunds in BTCPay", "Erstattungen in BTCPay anlegen", None),
+ ("Off by default: refunds are then done by hand in BTCPay and recorded in pretix. On, a refund in pretix creates a BTCPay pull payment that the buyer claims and someone approves in BTCPay; the API key then also needs btcpay.store.cancreatenonapprovedpullpayments.",
+  "Standardmäßig aus: Erstattungen macht das Team dann von Hand in BTCPay und trägt sie in pretix ein. An: Eine Erstattung in pretix legt ein Pull Payment in BTCPay an, das die Käuferin oder der Käufer abholt und jemand in BTCPay freigibt; der API-Schlüssel braucht dann auch btcpay.store.cancreatenonapprovedpullpayments.", None),
+ ("Refunds in BTCPay need the permission btcpay.store.cancreatenonapprovedpullpayments.", "Erstattungen in BTCPay brauchen das Recht btcpay.store.cancreatenonapprovedpullpayments.", None),
+ ("only if refunds are created in BTCPay: someone approves each payout there", "nur, wenn Erstattungen in BTCPay angelegt werden: Jede Auszahlung gibt dort jemand frei", None),
  ("The API key is not allowed to create refunds (btcpay.store.cancreatenonapprovedpullpayments).", "Der API-Schlüssel darf keine Erstattungen anlegen (btcpay.store.cancreatenonapprovedpullpayments).", None),
  ("The webhook is being registered right now. Please save again in a minute.", "Der Webhook wird gerade eingerichtet. Bitte in einer Minute noch einmal speichern.", None),
  ("This payment can not be continued. Please start the payment again.", "Diese Zahlung lässt sich nicht fortsetzen. Bitte starten Sie die Zahlung neu.", "Diese Zahlung lässt sich nicht fortsetzen. Bitte starte die Zahlung neu."),
@@ -11,7 +16,6 @@ T = [
  ("BTCPay did not answer while creating a refund. Check in BTCPay whether a pull payment with this name exists before trying again.", "BTCPay hat beim Anlegen einer Erstattung nicht geantwortet. Bitte in BTCPay nachsehen, ob es ein Pull Payment mit diesem Namen gibt, bevor es jemand noch einmal versucht.", None),
  ("The order was marked paid after its confirmed BTCPay payment.", "Die Bestellung wurde nachträglich als bezahlt markiert, passend zu ihrer bestätigten BTCPay-Zahlung.", None),
  ("The BTCPay payment arrived, but the order could not be marked paid because its seats are gone. Add quota or return the money.", "Die BTCPay-Zahlung ist angekommen, aber die Bestellung ließ sich nicht als bezahlt markieren, weil ihre Plätze vergeben sind. Kontingent erhöhen oder das Geld zurückzahlen.", None),
- ("optional: refunds, which someone approves in BTCPay", "optional: Erstattungen, die jemand in BTCPay freigibt", None),
  ("Keys with any other permission, or for other stores, are refused: they could spend or change more than this plugin needs.", "Schlüssel mit anderen Rechten oder für andere Stores werden abgelehnt: Mit ihnen ließe sich mehr ausgeben oder ändern, als das Plugin braucht.", None),
  ("Money beyond the amount of another BTCPay payment of this order, on the same invoice:", "Geld über den Betrag einer anderen BTCPay-Zahlung dieser Bestellung hinaus, auf derselben Rechnung:", None),
  ("Booked as overpayment", "Als Überzahlung gebucht", None),
