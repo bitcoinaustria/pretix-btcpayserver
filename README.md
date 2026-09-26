@@ -1,76 +1,87 @@
 # pretix BTCPay Server
 
-Accept Bitcoin Lightning and on-chain Bitcoin payments in [pretix](https://pretix.eu/) using the [BTCPay Server](https://btcpayserver.org/) **Greenfield API** (not the deprecated BitPay-compatible API).
+Accept Bitcoin payments (Lightning and on-chain) in [pretix](https://pretix.eu/) through the
+[BTCPay Server](https://btcpayserver.org/) **Greenfield API**. The buyer pays on the checkout page of your own
+BTCPay Server; pretix learns about it from a signed webhook, with a periodic poll as fallback.
 
-The customer pays on the BTCPay checkout page hosted by your BTCPay Server instance. A store-level webhook with signature verification and a small polling script in the pending-payment page keep pretix in sync with the payment status.
+This is a fork of [dadofsambonzuki/pretix-btcpayserver](https://github.com/dadofsambonzuki/pretix-btcpayserver),
+hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork changes](#what-this-fork-changes).
 
 ## Requirements
 
-- **pretix** ≥ 4.0 (Django-based event management platform)
-- **Python** ≥ 3.11
-- **BTCPay Server** instance with a store configured (with a wallet)
-- Django ≥ 4, requests, i18nfield
+- pretix 2026.7 (tested), Python ≥ 3.11
+- BTCPay Server 2.x (tested with 2.3.9) with a store that has an on-chain wallet and, optionally, Lightning
+- `pretix cron` running regularly (every few minutes), as pretix recommends anyway
 
-## Installation
+## Setup
 
-```bash
-# Install from source
-pip install -e .
-```
+1. In BTCPay, create an API key under *Account → API keys*, limited to the receiving store, with exactly:
+   - required: `btcpay.store.cancreateinvoice`, `btcpay.store.canviewinvoices`, `btcpay.store.webhooks.canmodifywebhooks`
+   - optional: `btcpay.store.canmodifyinvoices` (invalidates the unpaid invoice when a buyer switches the payment
+     method), `btcpay.store.cancreatepullpayments` (refunds)
 
-Then activate the plugin in the pretix "Plugins" settings page. You can also enable the plugin per event.
+   Keys with more rights (`unrestricted`, store settings, payouts) are refused.
+2. Enable the plugin in pretix and fill in *Settings → Payment → BTCPay Server*: URL (https), API key, store ID,
+   the number of confirmations (1, 2 or 6; zero is not offered) and the invoice expiration.
+3. Saving checks the key and registers the webhook on the store with a secret the plugin generates. There is one
+   webhook per pretix event: `https://<pretix>/<organizer>/<event>/btcpay/webhook/`.
 
-## Configuration
+## How payments work
 
-In the event's **Settings → Payment → BTCPay Server (Bitcoin / Lightning)** you need to provide:
+| BTCPay invoice | pretix payment | order |
+|---|---|---|
+| `New` (also partially paid) | created | pending until its payment deadline |
+| `Processing`: fully paid, not yet confirmed | pending | reserved while BTCPay monitors the transaction (default a day) |
+| `Settled` (also `PaidOver`, `Marked`) | confirmed, also after it failed or was cancelled | paid |
+| `Expired` (also `PaidPartial`, `PaidLate`) | failed | back to its old payment deadline |
+| `Invalid` | failed; a confirmed payment is only flagged | back to its old payment deadline |
 
-| Setting | Description |
-|---|---|
-| **BTCPay Server URL** | The base URL of your BTCPay Server instance, e.g. `https://btcpay.example.com` |
-| **API key** | An API key restricted to the receiving store with permissions: `btcpay.store.cancreateinvoice`, `btcpay.store.canviewinvoices`, `btcpay.store.webhooks.canmodifywebhooks` |
-| **Store ID** | The ID of the store that will receive the payments (shown in the store's settings page or in the store URL) |
-| **Payment link expiry** | How many minutes before the payment link expires (default: 30) |
-| **Payment method name** | Custom name shown to customers during checkout |
+- The webhook payload is only used for the invoice id: the plugin reads the invoice back from the API and checks
+  store, event, order, payment, amount and currency before it acts. A replayed, reordered or forged delivery can
+  therefore not change anything the invoice itself does not say.
+- Every invoice runs until the order's payment deadline at the latest, and at most the configured minutes
+  (default 15): the exchange rate is fixed while it runs, and after the deadline the seats may be sold again.
+  The invoice asks for the configured speed policy and a payment tolerance of 0.
+- A buyer who switches the payment method gets a new invoice; the old one is invalidated in BTCPay. If money
+  still arrives on it and BTCPay settles it (or an admin marks it settled), that payment counts, and other open
+  BTCPay payments of the now paid order are cancelled. Money is never silently dropped.
+- Partial, over and late payments are logged on the order ("Needs attention" in the payment details) for the team
+  to handle in BTCPay. Refunds create a BTCPay pull payment the buyer claims with their own address.
+- The pending page polls a status endpoint that needs the order secret and only reads the database.
 
-### Webhook
+## Security notes
 
-The webhook endpoint is registered automatically on your store when the first payment is created. It uses HMAC-SHA256 signature verification to ensure authenticity.
+- Webhooks: `POST` only, at most 64 KiB, HMAC-SHA256 over the raw body (`BTCPay-Sig`), constant-time compare,
+  before anything is parsed. The secret is generated by the plugin and set on create and update, so the webhook
+  never has to be deleted and recreated; its registration is serialized on the event row.
+- The plugin only redirects to the configured BTCPay host and requires https for it (except localhost).
+- The API key is stored like other pretix payment secrets. No personal data is sent to BTCPay: the invoice metadata
+  holds the order code, payment id and event.
 
-Endpoints:
-- `https://yourpretix.example.com/{event}/btcpay/webhook/` — receives invoice status updates from BTCPay Server
-- `https://yourpretix.example.com/{event}/btcpay/status/{order}/{payment}/` — polling endpoint for the pending payment page
-
-## How it works
-
-1. Customer selects "Bitcoin / Lightning Network" during checkout
-2. An invoice is created on your BTCPay Server via the Greenfield API
-3. Customer is redirected to the BTCPay checkout page
-4. BTCPay Server sends webhook events (`InvoiceSettled`, `InvoiceExpired`, etc.) to pretix
-5. The webhook handler verifies the signature and confirms the payment
-6. While the payment is pending, the order page polls for status updates
-7. On successful payment, the order is confirmed; on expiry, the payment is marked as failed
-
-## Supported webhook events
-
-- `InvoiceSettled`
-- `InvoiceProcessing`
-- `InvoiceExpired`
-- `InvoiceInvalid`
-- `InvoiceReceivedPayment`
-- `InvoicePaymentSettled`
-
-## Development
+## Development and tests
 
 ```bash
-# Clone the repo
-git clone https://github.com/dadofsambonzuki/pretix-btcpayserver
-cd pretix-btcpayserver
-
-# Create a virtual environment
-python -m venv .venv
-source .venv/bin/activate
-
-# Install in editable mode
-pip install -e .
+python -m unittest discover -s tests -t .   # the state machine and the security checks, without pretix
 ```
 
+End-to-end tests on regtest (on-chain, Lightning, expiry, partial, over and late payments, double spends,
+switched payment methods, lost webhooks, forged webhooks, refunds, a rush of buyers) live in the Bitcoin Zitadelle
+website repository (`scripts/pretix-e2e-bitcoin.mjs`, run with `PRETIX_BTCPAY=greenfield`).
+
+## What this fork changes
+
+Compared with upstream 0.1.1:
+
+- Expired and invalid invoices fail their payment (upstream ignored every event but `InvoiceSettled`).
+- The invoice state is always read from the API, never taken from the webhook payload, and checked against the payment.
+- Settled invoices of failed or cancelled payments still confirm them, instead of being dropped with a 200.
+- A periodic task polls invoices that may still change, so a lost webhook does not leave a paid order unpaid.
+- The webhook is registered when the settings are saved, with our own secret, under a lock; not lazily at the first
+  sale, where concurrent buyers could end up with a secret that belongs to a deleted webhook.
+- Unconfirmed payments keep the order reserved, and a dropped one gives the seats back.
+- Invoices expire with the order at the latest, with explicit speed policy and zero payment tolerance.
+- Invoices are only created in `execute_payment`; emails link to pretix' own payment page instead of creating
+  invoices while rendering.
+- The status endpoint needs the order secret and does not call BTCPay.
+- Absolute redirect URL back to the order, links only to the configured BTCPay host.
+- Refunds via pull payments, cancel handling, German translations (formal and informal), tests.
