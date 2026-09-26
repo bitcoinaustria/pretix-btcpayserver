@@ -417,6 +417,18 @@ class BTCPayServer(BasePaymentProvider):
             raise PaymentException(_("This payment has no BTCPay invoice to refund."))
         name = f"pretix {self.event.slug} {refund.order.code} R{refund.local_id} #{refund.pk}"
         # Note the intent first: if anything goes wrong after the request left, BTCPay may have created the claim.
+        # pretix runs this inside its own transaction, which a crash rolls back, so also outside the database: in the
+        # log and in the shared cache, where a second refund of the same invoice looks for it.
+        intent = f"pretix_btcpay_refund_intent_{refund.order.pk}_{invoice_id}"
+        earlier = cache.get(intent)
+        if earlier and earlier != name:
+            refund.info_data = {"ambiguous": True, "name": name, "earlier": earlier}
+            refund.state = OrderRefund.REFUND_STATE_TRANSIT
+            refund.save(update_fields=["info", "state"])
+            refund.order.log_action("pretix_btcpay.refund.ambiguous", data={"local_id": refund.local_id, "name": name, "earlier": earlier})
+            return
+        cache.set(intent, name, timeout=30 * 24 * 3600)
+        logger.warning("BTCPay: creating refund %s for invoice %s (%s %s)", name, invoice_id, refund.amount, self.event.currency)
         refund.info_data = {"name": name, "in_flight": True}
         refund.save(update_fields=["info"])
 
@@ -434,6 +446,7 @@ class BTCPayServer(BasePaymentProvider):
         except BTCPayError as e:
             if e.status is not None and 400 <= e.status < 500 and e.status != 408:
                 # BTCPay refused: nothing was created.
+                cache.delete(intent)
                 refund.info_data = {"name": name}
                 refund.save(update_fields=["info"])
                 if e.status == 403:
@@ -444,6 +457,7 @@ class BTCPayServer(BasePaymentProvider):
         link = pull.get("viewLink") or ""
         if not pull.get("id") or not is_own_link(self.client.url, link):
             return ambiguous()
+        cache.delete(intent)
         refund.info_data = {"pull_payment_id": pull.get("id"), "claim_link": link, "name": name}
         # The buyer still has to claim it and the team to approve it in BTCPay; it is done once BTCPay paid it out.
         refund.state = OrderRefund.REFUND_STATE_TRANSIT

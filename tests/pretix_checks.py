@@ -20,10 +20,12 @@ from pretix.base.models import Event, Order, OrderPayment
 from pretix_btcpay import state, sync
 from pretix_btcpay.api import BTCPayAPI
 
-# The payments on the made-up invoices: all confirmed, unless a check says otherwise.
+# The payments on the made-up invoices, as (status, euros) at a rate of 1: one confirmed payment of the ticket price,
+# unless a check says otherwise.
 PAYMENTS = {}
 BTCPayAPI.get_invoice_payment_methods = lambda self, store_id, invoice_id: [
-    {"paymentMethodId": "BTC-CHAIN", "payments": [{"status": s} for s in PAYMENTS.get(invoice_id, ["Settled"])]}]
+    {"paymentMethodId": "BTC-CHAIN", "rate": "1",
+     "payments": [{"status": s, "value": v} for s, v in PAYMENTS.get(invoice_id, [("Settled", "266.00")])]}]
 
 ORGANIZER, EVENT = os.environ.get("CHECK_EVENT", "zitadelle/2027").split("/")
 results = []
@@ -108,17 +110,18 @@ with scope(organizer=event.organizer):
 
     print("Überzahlt, zweimal gemeldet, dann noch mehr")
     order, payment, inv = order_with_payment()
-    PAYMENTS[inv] = ["Settled", "Processing"]
+    PAYMENTS[inv] = [("Settled", "266.00"), ("Processing", "133.00")]
     sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, "PaidOver", paidAmount="399.00"), "check")
     reload(order, payment)
     check(order.status == "p" and not order.payments.filter(state="confirmed").exclude(pk=payment.pk).exists(),
           "zweite Zahlung noch unbestätigt: bezahlt, aber kein Überschuss gebucht")
-    PAYMENTS[inv] = ["Settled", "Settled"]
+    PAYMENTS[inv] = [("Settled", "266.00"), ("Invalid", "50.00"), ("Settled", "133.00")]
     for _ in range(2):
         sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, "PaidOver", paidAmount="399.00"), "check")
     reload(order, payment)
     surplus = list(order.payments.filter(state="confirmed").exclude(pk=payment.pk).values_list("amount", flat=True))
     check(order.status == "p" and surplus == [Decimal("133.00")], f"bezahlt, Überschuss einmal als eigene Zahlung gebucht ({surplus})")
+    PAYMENTS[inv] = [("Settled", "266.00"), ("Settled", "133.00"), ("Settled", "61.00")]
     sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, "None", paidAmount="460.00"), "check")
     surplus = sorted(order.payments.filter(state="confirmed").exclude(pk=payment.pk).values_list("amount", flat=True))
     check(surplus == [Decimal("61.00"), Decimal("133.00")], f"später noch mehr Geld, auch ohne „PaidOver“: der Rest gebucht ({surplus})")
@@ -219,6 +222,7 @@ with scope(organizer=event.organizer):
     reload(order, payment)
     original_refund = BTCPayAPI.refund_invoice
     outcomes = {}
+    from django.core.cache import cache as _cache
     for label, behaviour in (("keine Antwort", _Err("timeout")), ("Serverfehler", _Err("boom", status=502)),
                              ("fremder Link", {"id": "PP1", "viewLink": "https://evil.example/pp"}),
                              ("abgelehnt", _Err("bad", status=400))):
@@ -227,6 +231,7 @@ with scope(organizer=event.organizer):
                 raise _b
             return _b
         BTCPayAPI.refund_invoice = fake_refund
+        _cache.delete(f"pretix_btcpay_refund_intent_{order.pk}_{inv}")
         refund = order.refunds.create(payment=payment, source=OrderRefund.REFUND_SOURCE_ADMIN, state=OrderRefund.REFUND_STATE_CREATED,
                                       amount=Decimal("10.00"), provider=sync.PROVIDER)
         try:
@@ -242,6 +247,22 @@ with scope(organizer=event.organizer):
     check(all(outcomes[k] == ("transit", True) for k in ("keine Antwort", "Serverfehler", "fremder Link")),
           f"ohne klare Antwort: in Arbeit, für einen Menschen markiert ({outcomes})")
     check(outcomes["abgelehnt"] == ("abgelehnt", False), "von BTCPay abgelehnt: sauber gescheitert, nichts angelegt")
+    # Eine unklare Erstattung sperrt die nächste derselben Rechnung, bis jemand in BTCPay nachgesehen hat.
+    _cache.delete(f"pretix_btcpay_refund_intent_{order.pk}_{inv}")
+    BTCPayAPI.refund_invoice = lambda self, *a, **kw: (_ for _ in ()).throw(_Err("timeout"))
+    first = order.refunds.create(payment=payment, source=OrderRefund.REFUND_SOURCE_ADMIN, state=OrderRefund.REFUND_STATE_CREATED,
+                                 amount=Decimal("10.00"), provider=sync.PROVIDER)
+    provider.execute_refund(first)
+    asked_again = []
+    BTCPayAPI.refund_invoice = lambda self, *a, **kw: asked_again.append(1) or {"id": "PP2", "viewLink": str(provider.settings.url) + "/pp"}
+    second = order.refunds.create(payment=payment, source=OrderRefund.REFUND_SOURCE_ADMIN, state=OrderRefund.REFUND_STATE_CREATED,
+                                  amount=Decimal("10.00"), provider=sync.PROVIDER)
+    provider.execute_refund(second)
+    second.refresh_from_db()
+    check(not asked_again and second.info_data.get("ambiguous") and second.info_data.get("earlier") == first.info_data.get("name"),
+          "nach einer unklaren Erstattung fragt die nächste BTCPay gar nicht erst, sondern verweist auf die erste")
+    BTCPayAPI.refund_invoice = original_refund
+    _cache.delete(f"pretix_btcpay_refund_intent_{order.pk}_{inv}")
 
     print("Abgleich bei 500 offenen Zahlungen")
     from pretix_btcpay.api import BTCPayAPI, BTCPayError

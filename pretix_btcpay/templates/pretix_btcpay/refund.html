@@ -8,5 +8,5 @@
     </dl>
     <p class="text-muted">{% trans "Send this link to the buyer. They enter their own Bitcoin address or Lightning invoice there, and someone approves the payout in BTCPay; once BTCPay has paid it out, mark this refund as done." %}</p>
 {% elif info.ambiguous %}
-    <p class="text-danger">{% trans "BTCPay did not answer while creating this refund. Check in BTCPay whether a pull payment with this name exists before trying again:" %} <code>{{ info.name }}</code></p>
+    <p class="text-danger">{% trans "BTCPay did not answer while creating this refund. Check in BTCPay whether a pull payment with this name exists before trying again:" %} <code>{{ info.earlier|default:info.name }}</code></p>
 {% endif %}

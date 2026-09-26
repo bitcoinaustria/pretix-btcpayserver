@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone as dt_timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
 from django.db import transaction
 from django.db.models import Sum
@@ -201,16 +201,26 @@ def _catch_up_order(payment: OrderPayment, invoice: dict) -> None:
         _note(payment, "quota_exceeded", invoice)
 
 
-def _all_confirmed(provider, invoice: dict) -> bool:
+def _confirmed_amount(provider, invoice: dict) -> Decimal | None:
     """
-    Whether every payment BTCPay counts on the invoice is confirmed. paidAmount includes unconfirmed transactions, and
-    one that is replaced later would leave a surplus that never arrived; refunding that would pay out money twice.
+    What arrived on the invoice and is confirmed, in the invoice currency, rounded down to the cent; None while any
+    payment is still unconfirmed or BTCPay does not answer. paidAmount also counts unconfirmed transactions, and one
+    replaced later would leave a surplus that never arrived; refunding that would pay out money that is not there.
+    Computed from the payment list alone, so a transfer that turned invalid since the invoice was read cannot count.
     """
     try:
         methods = provider.client.get_invoice_payment_methods(str(provider.settings.store_id), invoice["id"])
     except BTCPayError:
-        return False
-    return all(p.get("status") in ("Settled", "Invalid") for m in methods for p in (m.get("payments") or []))
+        return None
+    total = Decimal("0")
+    for method in methods:
+        rate = _decimal(method.get("rate"))
+        for p in method.get("payments") or []:
+            if p.get("status") == "Settled":
+                total += _decimal(p.get("value")) * rate
+            elif p.get("status") != "Invalid":
+                return None
+    return total.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
 
 def _record_surplus(provider, payment: OrderPayment, invoice: dict) -> None:
@@ -219,11 +229,13 @@ def _record_surplus(provider, payment: OrderPayment, invoice: dict) -> None:
     pretix then shows the order as overpaid, and refunding the surplus does not eat into the ticket. BTCPay reports
     paidAmount in the invoice currency, at the rate of the invoice.
     """
-    surplus = _decimal(invoice.get("paidAmount")) - payment.amount
-    if surplus <= _decimal(payment.info_data.get("surplus_recorded")):
+    if _decimal(invoice.get("paidAmount")) - payment.amount <= _decimal(payment.info_data.get("surplus_recorded")):
         return
-    if not _all_confirmed(provider, invoice):
+    confirmed = _confirmed_amount(provider, invoice)
+    if confirmed is None:
         return  # the webhook for the confirmation, or the poll, comes back for it
+    # Never more than BTCPay itself counts (its paidAmount is net of payment method fees), never unconfirmed money.
+    surplus = min(confirmed, _decimal(invoice.get("paidAmount"))) - payment.amount
     if Order.objects.get(pk=payment.order_id).status != Order.STATUS_PAID:
         # Booking it now could mark an order paid that lost its seats; the team sees the note and decides.
         _note(payment, state.NOTE_OVERPAID, invoice, key=str(surplus))
