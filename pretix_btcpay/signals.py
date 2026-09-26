@@ -47,6 +47,7 @@ LOG_TEXTS = {
     "pretix_btcpay.mismatch": _("A BTCPay invoice did not match its payment and was ignored."),
     "pretix_btcpay.refund.created": _("A BTCPay refund was created; the buyer has to claim it and the team to approve it in BTCPay."),
     "pretix_btcpay.refund.ambiguous": _("BTCPay did not answer while creating a refund. Check in BTCPay whether a pull payment with this name exists before trying again."),
+    "pretix_btcpay.refund.refused": _("A refund was not sent to BTCPay, because an earlier refund of the same payment went there. Check BTCPay and do it there by hand."),
     "pretix_btcpay.order_caught_up": _("The order was marked paid after its confirmed BTCPay payment."),
     "pretix_btcpay.quota_exceeded": _("The BTCPay payment arrived, but the order could not be marked paid because its seats are gone. Add quota or return the money."),
     "pretix_btcpay.webhook.registered": _("The BTCPay webhook was registered."),

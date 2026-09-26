@@ -12,8 +12,9 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
 - pretix 2026.7 (tested), Python ≥ 3.11
 - BTCPay Server 2.x (tested with 2.3.9) with a store that has an on-chain wallet and, optionally, Lightning
 - `pretix cron` running regularly (every few minutes), as pretix recommends anyway
-- Redis (or memcached) as pretix' cache, as for any pretix with more than one worker: the plugin serialises work
-  on an order and webhook registration through it. Without a shared cache these locks do nothing.
+- PostgreSQL, as pretix recommends for production, and no pgbouncer in transaction mode in front of it: work on an
+  order and the webhook registration are serialised with advisory locks (`locks.py`)
+- Redis (or memcached) as pretix' cache, only if refunds are created in BTCPay (see below)
 
 ## Setup
 
@@ -63,28 +64,34 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
   finishes it; if the seats are really gone, the order is flagged instead.
 - Partial and late payments, and money on an expired or invalid invoice, are logged on the order ("Needs attention"
   in the payment details) for the team to handle in BTCPay. Refunds create a BTCPay pull payment the buyer claims with
-  their own address and someone approves in BTCPay (only if refunds are switched on). Each refund is noted in the
-  shared cache before the request and stays noted for 30 days, because pretix runs refunds inside a transaction that
-  a crash rolls back even after BTCPay created the claim. A refund without a clear answer, and any further refund of
-  the same invoice in that time, is marked for a human instead of being sent: they check BTCPay and create it there.
-- Webhook, poll and checkout work on an order one at a time (a lease in the shared cache, not a database lock, so it
-  cannot deadlock with pretix' own quota locks). A webhook that finds the order busy gets a 503 and BTCPay delivers
-  it again.
-- The poll asks about invoices that are due, longest unchecked first, at most 300 and 45 seconds per run (the next
-  run continues): open ones every minute, settled or closed ones pretix has not caught up with every few minutes,
-  the rest every half hour while BTCPay still watches them or money beyond the amount is not booked yet, and
-  uncounted closed ones every six hours for half a year. Refunded and failed payments are included, and it keeps
-  running when the payment method is disabled. It loads the plugin's payments of that half year each run, which is
-  fine for thousands of payments, not for millions.
+  their own address and someone approves in BTCPay (only if refunds are switched on). One refund per payment goes
+  through BTCPay: it is noted in the shared cache (atomically, so of two at once only one gets through) before the
+  request, and the note stays, because pretix runs refunds inside a transaction that a crash can roll back after
+  BTCPay created the claim. A refund without a clear answer is marked for a human; any further refund of the same
+  payment is refused with the name of the earlier one, to be checked and done by hand in BTCPay. The ticket and each
+  surplus are separate payments, so both can be refunded. The note lives only in the cache: Redis should persist.
+- Webhook, poll, checkout and cancelling work on an order one at a time, under a PostgreSQL advisory lock that lasts
+  until the surrounding transaction commits (cancelling runs inside pretix' own transaction) and never runs out. It
+  is only ever tried, never waited for in the database, so it cannot deadlock with pretix' row and quota locks. A
+  webhook that finds the order busy gets a 503 and BTCPay delivers it again; the poll takes it next time.
+- The poll asks about invoices that are due, longest unchecked first, at most 300 per run, and starts no new one
+  after 45 seconds (one that is running finishes; the next run continues): open ones every minute, settled or
+  closed ones pretix has not caught up with every few minutes, the rest every half hour while BTCPay still watches
+  them or money beyond the amount is not booked yet, and uncounted closed ones every six hours for half a year.
+  Refunded and failed payments are included, and it keeps running when the payment method is disabled. A settled
+  invoice pretix has not counted, or whose order it has not marked paid, stays in the poll however old it is. It
+  loads the plugin's payments of that half year each run, which is fine for thousands of payments, not for millions.
+- Every note for the team ("Needs attention") is logged again when the amount on the invoice changes, so money that
+  arrives after a refund or on a closed invoice is never silent.
 - The pending page polls a status endpoint that needs the order secret and only reads the database.
 
 ## Security notes
 
 - Webhooks: `POST` only, at most 64 KiB, HMAC-SHA256 over the raw body (`BTCPay-Sig`), constant-time compare,
   before anything is parsed. The secret is generated by the plugin and set on create and update, so the webhook
-  never has to be deleted and recreated. Registration runs only when the settings are saved (with a cache lease if
-  pretix has Redis or memcached), holds no database lock while talking to BTCPay, and a failed one keeps the working
-  webhook.
+  never has to be deleted and recreated. Registration runs only when the settings are saved, under an advisory lock
+  held until the settings are committed, holds no row while talking to BTCPay, and a failed one keeps the working
+  webhook. A staged webhook becomes active under the same lock, compared against the settings in the database.
 - `Settled` with `Marked` means an admin decided in BTCPay; the plugin trusts that decision.
 - The plugin only redirects to the configured BTCPay host and requires https for it (except localhost).
 - The API key is stored like other pretix payment secrets. No personal data is sent to BTCPay: the invoice metadata
@@ -110,7 +117,7 @@ Compared with upstream 0.1.1:
 - Settled invoices of failed or cancelled payments still confirm them, instead of being dropped with a 200.
 - Over payments and second transfers become their own confirmed payments; an interrupted confirmation is finished.
 - A periodic task polls invoices that may still change, so a lost webhook does not leave a paid order unpaid.
-- The webhook is registered when the settings are saved, with our own secret, under a lease; not lazily at the first
+- The webhook is registered when the settings are saved, with our own secret, under a lock; not lazily at the first
   sale, where concurrent buyers could end up with a secret that belongs to a deleted webhook.
 - API keys are checked against an allowlist: three required store permissions, one optional for refunds, nothing else.
 - Unconfirmed payments keep the order reserved, and a dropped one gives the seats back.

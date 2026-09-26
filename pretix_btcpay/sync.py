@@ -12,17 +12,13 @@ order as overpaid and the surplus can be refunded without touching the ticket's 
 """
 import json
 import logging
-import secrets
-import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
-from django.conf import settings
-from django.core.cache import cache
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.utils.timezone import now
 
 from pretix.base.models import Order, OrderPayment, OrderRefund, Quota
@@ -32,6 +28,7 @@ from pretix.helpers.database import OF_SELF
 
 from . import state
 from .api import BTCPayError
+from .locks import ORDER, advisory_lock
 
 logger = logging.getLogger(__name__)
 
@@ -53,36 +50,15 @@ class OrderBusy(Exception):
     """Another worker is applying an invoice to a payment of this order right now."""
 
 
-_held = threading.local()
-
-
 @contextmanager
 def order_lock(order_id: int, wait: float = 0):
     """
     One worker at a time per order for everything that changes its BTCPay payments: the webhook, the poll, the
-    checkout and cancelling. A lease in the shared cache, not a database lock, so it cannot cross pretix' own quota
-    and order locks. Reentrant within a thread (cancelling a sibling from inside apply). ``wait`` seconds to wait for
-    it, then OrderBusy. Needs Redis or memcached, which pretix needs in production anyway; without, there is no lease.
+    checkout and cancelling (locks.py: held until the surrounding transaction commits, never expires, no deadlocks).
+    Reentrant within a thread (cancelling a sibling from inside apply). ``wait`` seconds to try, then OrderBusy.
     """
-    held = getattr(_held, "orders", None)
-    if held is None:
-        held = _held.orders = set()
-    if order_id in held or not getattr(settings, "REAL_CACHE_USED", False):
+    with advisory_lock(ORDER, order_id, wait=wait, busy=OrderBusy):
         yield
-        return
-    key, token = f"pretix_btcpay_order_{order_id}", secrets.token_hex(8)
-    until = time.monotonic() + wait
-    while not cache.add(key, token, timeout=120):
-        if time.monotonic() >= until:
-            raise OrderBusy()
-        time.sleep(0.2)
-    held.add(order_id)
-    try:
-        yield
-    finally:
-        held.discard(order_id)
-        if cache.get(key) == token:
-            cache.delete(key)
 
 
 def event_ref(event) -> str:
@@ -226,8 +202,9 @@ def _catch_up_order(payment: OrderPayment, invoice: dict) -> None:
     if _net_paid(order) < order.total:
         return
     try:
-        # apply holds the order lock, so no other webhook, poll or checkout confirms or catches up at the same time;
-        # read the order fresh anyway before marking it paid. pretix takes its quota locks inside.
+        # apply holds the order lock until its changes are committed, so no other webhook, poll or checkout confirms
+        # or catches up at the same time; read the order fresh anyway before marking it paid. pretix takes its quota
+        # locks inside.
         with transaction.atomic():
             order = Order.objects.get(pk=payment.order_id)
             net = _net_paid(order)
@@ -271,13 +248,15 @@ def _record_surplus(provider, payment: OrderPayment, invoice: dict) -> None:
     pretix then shows the order as overpaid, and refunding the surplus does not eat into the ticket. BTCPay reports
     paidAmount in the invoice currency, at the rate of the invoice.
     """
-    if _decimal(invoice.get("paidAmount")) - payment.amount <= _decimal(payment.info_data.get("surplus_recorded")):
+    paid = _decimal(invoice.get("paidAmount"))
+    info = payment.info_data
+    if paid - payment.amount <= _decimal(info.get("surplus_recorded")) or info.get("surplus_counted") == str(paid):
         return
     confirmed = _confirmed_amount(provider, invoice)
     if confirmed is None:
         return  # the webhook for the confirmation, or the poll, comes back for it
     # Never more than BTCPay itself counts (its paidAmount is net of payment method fees), never unconfirmed money.
-    surplus = min(confirmed, _decimal(invoice.get("paidAmount"))) - payment.amount
+    surplus = min(confirmed, paid) - payment.amount
     if Order.objects.get(pk=payment.order_id).status != Order.STATUS_PAID:
         # Booking it now could mark an order paid that lost its seats; the team sees the note and decides.
         _note(payment, state.NOTE_OVERPAID, invoice, key=str(surplus))
@@ -287,11 +266,16 @@ def _record_surplus(provider, payment: OrderPayment, invoice: dict) -> None:
         locked = OrderPayment.objects.select_for_update(of=OF_SELF).get(pk=payment.pk)
         info = locked.info_data
         delta = surplus - _decimal(info.get("surplus_recorded"))
-        if delta <= 0:
-            return
-        info["surplus_recorded"] = str(surplus)
+        # Everything BTCPay counted up to this paidAmount is booked; rounding down to the cent can leave a cent less,
+        # which must not keep the poll asking forever.
+        info["surplus_counted"] = str(paid)
+        if delta > 0:
+            info["surplus_recorded"] = str(surplus)
         locked.info_data = info
         locked.save(update_fields=["info"])
+        if delta <= 0:
+            payment.refresh_from_db()
+            return
         extra = locked.order.payments.create(
             provider=PROVIDER, amount=delta, state=OrderPayment.PAYMENT_STATE_CREATED,
             info=json.dumps({"surplus_of": locked.pk, "invoice_id": invoice.get("id"), "status": state.SETTLED}),
@@ -330,7 +314,7 @@ def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
     decision = state.decide(invoice.get("status"), invoice.get("additionalStatus"), payment.state, paid=paid > 0)
     for note in decision.notes:
         if note != state.NOTE_OVERPAID:  # booked with its amount below
-            _note(payment, note, invoice)
+            _note(payment, note, invoice, key=str(paid))  # again when more money arrives
 
     if decision.action == "pending":
         _hold_order(payment, invoice)  # first secure the seats, then show the payment as on its way
@@ -393,7 +377,8 @@ def next_check(payment: OrderPayment, at: datetime) -> float | None:
     if status in (state.EXPIRED, state.INVALID) and _decimal(info.get("paid_amount")) > 0 and not counted:
         return checked + WATCH  # money on a closed invoice, until someone decides in BTCPay
     if (status == state.SETTLED and payment.state == OrderPayment.PAYMENT_STATE_CONFIRMED
-            and _decimal(info.get("paid_amount")) - payment.amount > _decimal(info.get("surplus_recorded"))):
+            and _decimal(info.get("paid_amount")) - payment.amount > _decimal(info.get("surplus_recorded"))
+            and info.get("surplus_counted") != info.get("paid_amount")):
         return checked + WATCH  # money beyond the amount that is not booked yet (unconfirmed, or BTCPay did not answer)
     if (monitoring is None or monitoring > at) or payment.created >= at - timedelta(days=2):
         return checked + WATCH  # late money on a settled invoice, a manual change, a lost webhook
@@ -412,10 +397,16 @@ def poll(budget: int = 300, seconds: float = 45) -> dict:
 
     stats = {"due": 0, "checked": 0, "changed": 0, "errors": 0, "busy": 0}
     at = now()
-    deadline = time.monotonic() + seconds  # the next run picks up where this one stopped, longest unchecked first
+    # Starts no new check after this; the next run picks up where this one stopped, longest unchecked first.
+    deadline = time.monotonic() + seconds
+    # Unfinished work does not age out: a settled invoice pretix has not counted, or whose order it has not marked
+    # paid. pretix stores info as JSON with sorted keys and the default separators.
+    settled = Q(info__contains='"status": "Settled"')
+    unfinished = settled & (~Q(state__in=(OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED))
+                            | Q(order__status__in=(Order.STATUS_PENDING, Order.STATUS_EXPIRED)))
     with scopes_disabled():
         candidates = list(
-            OrderPayment.objects.filter(provider=PROVIDER, created__gte=at - WINDOW)
+            OrderPayment.objects.filter(provider=PROVIDER).filter(Q(created__gte=at - WINDOW) | unfinished)
             .select_related("order", "order__event", "order__event__organizer")
         )
     due = []

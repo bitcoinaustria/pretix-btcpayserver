@@ -13,6 +13,7 @@ import os
 from datetime import timedelta
 from decimal import Decimal
 
+from django.db import transaction as _tx
 from django.utils.timezone import now
 from django_scopes import scope, scopes_disabled
 from pretix.base.models import Event, Order, OrderPayment
@@ -47,9 +48,11 @@ with scope(organizer=event.organizer):
 
     def order_with_payment(minutes=30):
         counter[0] += 1
-        order = Order.objects.create(event=event, status=Order.STATUS_PENDING, expires=now() + timedelta(minutes=minutes),
-                                     total=Decimal("266.00"), testmode=True, email="checks@example.org", locale="de",
-                                     sales_channel=channel)
+        with _tx.atomic():  # wie pretix: die Bestellung mit ihren Buchungen
+            order = Order.objects.create(event=event, status=Order.STATUS_PENDING, expires=now() + timedelta(minutes=minutes),
+                                         total=Decimal("266.00"), testmode=True, email="checks@example.org", locale="de",
+                                         sales_channel=channel)
+            order.create_transactions()
         created.append(order.pk)
         invoice_id = f"CHECK{order.code}{counter[0]}"
         payment = order.payments.create(provider=sync.PROVIDER, amount=order.total, state=OrderPayment.PAYMENT_STATE_CREATED,
@@ -67,6 +70,19 @@ with scope(organizer=event.organizer):
     def reload(order, payment):
         order.refresh_from_db()
         payment.refresh_from_db()
+
+    from django.db import connections
+    from pretix_btcpay import locks
+    other = connections.create_connection("default")  # ein zweiter Arbeiter mit eigener Datenbanksitzung
+
+    def other_try(space, key):
+        with other.cursor() as c:
+            c.execute("SELECT pg_try_advisory_lock(%s, %s)", [space, key % 2 ** 31])
+            return c.fetchone()[0]
+
+    def other_release(space, key):
+        with other.cursor() as c:
+            c.execute("SELECT pg_advisory_unlock(%s, %s)", [space, key % 2 ** 31])
 
     print("Abweichende Rechnungen")
     order, payment, inv = order_with_payment()
@@ -212,25 +228,50 @@ with scope(organizer=event.organizer):
                                                          "url": str(provider.settings.url).rstrip("/"), "store_id": str(provider.settings.store_id)}))
     provider.promote_webhook()
     check(not provider.settings.pending_webhook and provider.settings.webhook_id == active[0], "für die gespeicherten Einstellungen: wird der aktive")
+    here = {"id": active[0], "secret": active[1], "url": str(provider.settings.url).rstrip("/"), "store_id": str(provider.settings.store_id)}
+    provider.settings.set("pending_webhook", _json.dumps(here))
+    with scopes_disabled():
+        stale = Event.objects.get(pk=event.pk).get_payment_providers()[sync.PROVIDER]
+    stale.settings.get("pending_webhook")  # dieses Event hält jetzt die Vormerkung von eben im Speicher
+    newer = _json.dumps({"id": "B", "secret": "b", "url": "https://b.example", "store_id": "B"})
+    provider.settings.set("pending_webhook", newer)  # inzwischen: ein anderer Laden vorgemerkt, noch nicht gespeichert
+    stale.promote_webhook()
+    event.settings.flush()
+    check(provider.settings.pending_webhook == newer and provider.settings.webhook_id == active[0],
+          "veraltete Einstellungen im Speicher: liest aus der Datenbank, übernimmt nichts, die neuere Vormerkung bleibt")
+    provider.settings.set("pending_webhook", _json.dumps(here))
+    check(other_try(locks.WEBHOOK, event.pk), "jemand speichert gerade die Einstellungen")
+    provider.promote_webhook()
+    event.settings.flush()
+    check(provider.settings.pending_webhook == _json.dumps(here), "währenddessen: nichts übernommen, erst danach")
+    other_release(locks.WEBHOOK, event.pk)
+    provider.promote_webhook()
+    event.settings.flush()
+    check(not provider.settings.pending_webhook and provider.settings.webhook_id == active[0], "danach: übernommen")
 
     print("Eine Bestellung, ein Arbeiter")
-    from django.conf import settings as _settings
-    from django.core.cache import cache as _c
     order, payment, inv = order_with_payment()
-    if getattr(_settings, "REAL_CACHE_USED", False):
-        _c.set(f"pretix_btcpay_order_{order.pk}", "jemand anderer", timeout=30)
-        try:
-            sync.apply(provider, payment, invoice(payment, inv, state.SETTLED), "check")
-            check(False, "besetzte Bestellung: trotzdem angewendet")
-        except sync.OrderBusy:
-            reload(order, payment)
-            check(payment.state == "created" and order.status == "n", "besetzte Bestellung: OrderBusy, nichts geändert (Webhook bekommt 503, BTCPay stellt neu zu)")
-        _c.delete(f"pretix_btcpay_order_{order.pk}")
+    check(other_try(locks.ORDER, order.pk), "ein anderer Arbeiter hält die Bestellung")
+    try:
         sync.apply(provider, payment, invoice(payment, inv, state.SETTLED), "check")
+        check(False, "besetzte Bestellung: trotzdem angewendet")
+    except sync.OrderBusy:
         reload(order, payment)
-        check(order.status == "p" and _c.get(f"pretix_btcpay_order_{order.pk}") is None, "frei: angewendet, Sperre wieder gelöst")
-    else:
-        check(False, "kein gemeinsamer Cache: die Sperre pro Bestellung lässt sich hier nicht prüfen")
+        check(payment.state == "created" and order.status == "n", "besetzte Bestellung: OrderBusy, nichts geändert (Webhook bekommt 503, BTCPay stellt neu zu)")
+    other_release(locks.ORDER, order.pk)
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED), "check")
+    reload(order, payment)
+    free = other_try(locks.ORDER, order.pk)
+    other_release(locks.ORDER, order.pk)
+    check(order.status == "p" and free, "frei: angewendet, Sperre danach wieder frei")
+    # Wie beim Wechsel der Zahlart: pretix ruft cancel_payment in seiner eigenen Transaktion auf.
+    order, payment, inv = order_with_payment()
+    with _tx.atomic():
+        sync.apply(provider, payment, invoice(payment, inv, state.SETTLED), "check")
+        during = other_try(locks.ORDER, order.pk)
+    after = other_try(locks.ORDER, order.pk)
+    other_release(locks.ORDER, order.pk)
+    check(not during and after, "in einer Transaktion: gesperrt bis zu ihrem Commit, nicht nur bis zum Ende von apply")
 
     print("Erstattungen aus, wenn nicht eingeschaltet")
     order, payment, inv = order_with_payment()
@@ -245,12 +286,29 @@ with scope(organizer=event.organizer):
     from pretix.base.models import OrderRefund
     from pretix.base.payment import PaymentException
     from pretix_btcpay.api import BTCPayError as _Err
-    order, payment, inv = order_with_payment()
-    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED), "check")
-    reload(order, payment)
-    original_refund = BTCPayAPI.refund_invoice
-    outcomes = {}
     from django.core.cache import cache as _cache
+    original_refund = BTCPayAPI.refund_invoice
+
+    def paid_order():
+        order, payment, inv = order_with_payment()
+        sync.apply(provider, payment, invoice(payment, inv, state.SETTLED), "check")
+        reload(order, payment)
+        return order, payment, inv
+
+    def new_refund(order, payment):
+        return order.refunds.create(payment=payment, source=OrderRefund.REFUND_SOURCE_ADMIN, state=OrderRefund.REFUND_STATE_CREATED,
+                                    amount=Decimal("10.00"), provider=sync.PROVIDER)
+
+    def run_refund(refund):
+        try:
+            provider.execute_refund(refund)
+            refund.refresh_from_db()
+            return refund.state, bool(refund.info_data.get("ambiguous")), ""
+        except PaymentException as e:
+            refund.refresh_from_db()
+            return "abgelehnt", bool(refund.info_data.get("ambiguous")), str(e)
+
+    outcomes = {}
     for label, behaviour in (("keine Antwort", _Err("timeout")), ("Serverfehler", _Err("boom", status=502)),
                              ("fremder Link", {"id": "PP1", "viewLink": "https://evil.example/pp"}),
                              ("abgelehnt", _Err("bad", status=400))):
@@ -259,67 +317,83 @@ with scope(organizer=event.organizer):
                 raise _b
             return _b
         BTCPayAPI.refund_invoice = fake_refund
-        _cache.delete(f"pretix_btcpay_refund_intent_{order.pk}_{inv}")
-        refund = order.refunds.create(payment=payment, source=OrderRefund.REFUND_SOURCE_ADMIN, state=OrderRefund.REFUND_STATE_CREATED,
-                                      amount=Decimal("10.00"), provider=sync.PROVIDER)
-        try:
-            provider.execute_refund(refund)
-            refund.refresh_from_db()
-            outcomes[label] = (refund.state, bool(refund.info_data.get("ambiguous")))
-        except PaymentException:
-            refund.refresh_from_db()
-            outcomes[label] = ("abgelehnt", bool(refund.info_data.get("ambiguous")))
-        refund.state = OrderRefund.REFUND_STATE_FAILED
-        refund.save(update_fields=["state"])
-    BTCPayAPI.refund_invoice = original_refund
+        order, payment, inv = paid_order()
+        outcomes[label] = run_refund(new_refund(order, payment))[:2]
     check(all(outcomes[k] == ("transit", True) for k in ("keine Antwort", "Serverfehler", "fremder Link")),
           f"ohne klare Antwort: in Arbeit, für einen Menschen markiert ({outcomes})")
     check(outcomes["abgelehnt"] == ("abgelehnt", False), "von BTCPay abgelehnt: sauber gescheitert, nichts angelegt")
-    # Eine unklare Erstattung sperrt die nächste derselben Rechnung, bis jemand in BTCPay nachgesehen hat.
-    _cache.delete(f"pretix_btcpay_refund_intent_{order.pk}_{inv}")
-    BTCPayAPI.refund_invoice = lambda self, *a, **kw: (_ for _ in ()).throw(_Err("timeout"))
-    first = order.refunds.create(payment=payment, source=OrderRefund.REFUND_SOURCE_ADMIN, state=OrderRefund.REFUND_STATE_CREATED,
-                                 amount=Decimal("10.00"), provider=sync.PROVIDER)
-    provider.execute_refund(first)
-    asked_again = []
-    BTCPayAPI.refund_invoice = lambda self, *a, **kw: asked_again.append(1) or {"id": "PP2", "viewLink": str(provider.settings.url) + "/pp"}
-    second = order.refunds.create(payment=payment, source=OrderRefund.REFUND_SOURCE_ADMIN, state=OrderRefund.REFUND_STATE_CREATED,
-                                  amount=Decimal("10.00"), provider=sync.PROVIDER)
-    provider.execute_refund(second)
-    second.refresh_from_db()
-    check(not asked_again and second.info_data.get("ambiguous") and second.info_data.get("earlier") == first.info_data.get("name"),
-          "nach einer unklaren Erstattung fragt die nächste BTCPay gar nicht erst, sondern verweist auf die erste")
-    # Wie in pretix' Erstattungsansicht: BTCPay legt den Claim an, danach bricht die Transaktion ab. Die Wiederholung
-    # darf keinen zweiten Claim anlegen.
-    _cache.delete(f"pretix_btcpay_refund_intent_{order.pk}_{inv}")
+
     posts = []
-    BTCPayAPI.refund_invoice = lambda self, *a, **kw: posts.append(1) or {"id": "PP3", "viewLink": str(provider.settings.url) + "/pp3"}
-    from django.db import transaction as _tx
+    BTCPayAPI.refund_invoice = lambda self, *a, **kw: posts.append(kw.get("name")) or {"id": f"PP{len(posts)}", "viewLink": str(provider.settings.url) + f"/pp{len(posts)}"}
+    # Nach einer unklaren Erstattung geht die nächste derselben Zahlung gar nicht erst an BTCPay.
+    BTCPayAPI.refund_invoice, answered = (lambda self, *a, **kw: (_ for _ in ()).throw(_Err("timeout"))), BTCPayAPI.refund_invoice
+    order, payment, inv = paid_order()
+    first = new_refund(order, payment)
+    run_refund(first)
+    BTCPayAPI.refund_invoice = answered
+    second = run_refund(new_refund(order, payment))
+    check(not posts and second[0] == "abgelehnt" and first.info_data["name"] in second[2],
+          "nach einer unklaren Erstattung: die nächste scheitert sauber, nennt die erste und fragt BTCPay nicht")
+    # Wie in pretix' Erstattungsansicht: BTCPay legt den Claim an, danach rollt die Transaktion zurück.
+    order, payment, inv = paid_order()
     try:
         with _tx.atomic():
-            lost = order.refunds.create(payment=payment, source=OrderRefund.REFUND_SOURCE_ADMIN, state=OrderRefund.REFUND_STATE_CREATED,
-                                        amount=Decimal("10.00"), provider=sync.PROVIDER)
-            provider.execute_refund(lost)
+            run_refund(new_refund(order, payment))
             raise RuntimeError("Worker stirbt vor dem Commit")
     except RuntimeError:
         pass
-    retry = order.refunds.create(payment=payment, source=OrderRefund.REFUND_SOURCE_ADMIN, state=OrderRefund.REFUND_STATE_CREATED,
-                                 amount=Decimal("10.00"), provider=sync.PROVIDER)
-    provider.execute_refund(retry)
-    retry.refresh_from_db()
-    check(len(posts) == 1 and retry.info_data.get("ambiguous") and "PP3" in (retry.info_data.get("earlier") or ""),
+    retry = run_refund(new_refund(order, payment))
+    check(len(posts) == 1 and retry[0] == "abgelehnt" and "PP1" in retry[2],
           "BTCPay hat angelegt, pretix rollt zurück: die Wiederholung legt keinen zweiten Claim an und nennt den ersten")
-    again = []
-    BTCPayAPI.refund_invoice = lambda self, *a, **kw: again.append(1) or {"id": "PP4", "viewLink": str(provider.settings.url) + "/pp4"}
-    retry.info_data = {"name": retry.info_data["name"], "in_flight": True}
-    retry.state = OrderRefund.REFUND_STATE_CREATED
-    retry.save(update_fields=["info", "state"])
-    _cache.delete(f"pretix_btcpay_refund_intent_{order.pk}_{inv}")
-    provider.execute_refund(retry)
-    retry.refresh_from_db()
-    check(not again and retry.info_data.get("ambiguous"), "dieselbe Erstattung noch einmal ausgeführt (Cache leer): kein zweiter Aufruf")
+    # Dieselbe Erstattung noch einmal, auch wenn der Cache leer ist.
+    order, payment, inv = paid_order()
+    done = new_refund(order, payment)
+    run_refund(done)
+    _cache.delete(f"pretix_btcpay_refund_{payment.pk}")
+    again = run_refund(done)
+    done.refresh_from_db()
+    check(len(posts) == 2 and again[0] == "abgelehnt" and done.info_data.get("pull_payment_id") == "PP2",
+          "eine schon gesendete Erstattung noch einmal ausgeführt: kein zweiter Aufruf, ihr Claim bleibt")
+    # Ticket und Überschuss sind zwei Zahlungen: beide lassen sich über BTCPay erstatten.
+    order, payment, inv = order_with_payment()
+    PAYMENTS[inv] = [("Settled", "266.00"), ("Settled", "133.00")]
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, "PaidOver", paidAmount="399.00"), "check")
+    reload(order, payment)
+    extra = order.payments.filter(state="confirmed").exclude(pk=payment.pk).first()
+    both = [run_refund(new_refund(order, p))[0] for p in (extra, payment)]
+    check(both == ["transit", "transit"] and len(posts) == 4, f"Überschuss und Ticket erstattet: zwei Claims ({both})")
     BTCPayAPI.refund_invoice = original_refund
-    _cache.delete(f"pretix_btcpay_refund_intent_{order.pk}_{inv}")
+
+    print("Überschuss mit Rundung")
+    order, payment, inv = order_with_payment()
+    PAYMENTS[inv] = [("Settled", "266.00"), ("Settled", "132.999")]
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, "PaidOver", paidAmount="399.00"), "check")
+    reload(order, payment)
+    extra = list(order.payments.filter(state="confirmed").exclude(pk=payment.pk).values_list("amount", flat=True))
+    OrderPayment.objects.filter(pk=payment.pk).update(created=now() - timedelta(days=10))
+    payment.refresh_from_db()
+    payment.info_data = {**payment.info_data, "monitoring_until": int((now() - timedelta(days=9)).timestamp())}
+    payment.save(update_fields=["info"])
+    check(extra == [Decimal("132.99")] and sync.next_check(payment, now()) is None,
+          f"ein Cent weniger nach dem Abrunden: gebucht ({extra}), der Abgleich fragt nicht ewig nach")
+
+    print("Nach der Erstattung noch mehr Geld")
+    order, payment, inv = order_with_payment()
+    payment.state = OrderPayment.PAYMENT_STATE_REFUNDED
+    payment.save(update_fields=["state"])
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED), "check")
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED), "check")
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, paidAmount="300.00"), "check")
+    notes = order.all_logentries().filter(action_type="pretix_btcpay.settled_after_refund").count()
+    check(notes == 2, f"jede neue Summe wird noch einmal vermerkt, dieselbe nicht ({notes})")
+
+    print("Alte, nicht erledigte Zahlung")
+    order, payment, inv = order_with_payment()
+    OrderPayment.objects.filter(pk=payment.pk).update(created=now() - sync.WINDOW - timedelta(days=30))
+    payment.refresh_from_db()
+    payment.info_data = {**payment.info_data, "status": state.SETTLED, "checked": 0}
+    payment.save(update_fields=["info"])
+    old_invoice = inv
 
     print("Abgleich bei 500 offenen Zahlungen")
     from pretix_btcpay.api import BTCPayAPI, BTCPayError
@@ -344,7 +418,11 @@ with scope(organizer=event.organizer):
     ours = {OrderPayment.objects.get(pk=pk).info_data["invoice_id"] for pk in ids}
     check(first["checked"] == 300 and len(seen_first) == 300, f"erster Lauf: 300 von {first['due']} fälligen")
     check(len(ours - seen_first - seen_second) == 0, "zweiter Lauf: zuerst die, die noch nie dran waren; keine bleibt liegen")
+    check(old_invoice in seen_first | seen_second, "eine Settled-Rechnung, die pretix nicht gezählt hat, fällt nie aus dem Abgleich, auch nach einem halben Jahr")
 
+    for pk in OrderPayment.objects.filter(order__pk__in=created).values_list("pk", flat=True):
+        _cache.delete(f"pretix_btcpay_refund_{pk}")
+    other.close()
     from django.db import transaction
     with transaction.atomic():
         Order.gracefully_delete_bulk(event, Order.objects.filter(pk__in=created, testmode=True))

@@ -12,8 +12,20 @@ msgstr "Ein Greenfield-API-Schlüssel nur für den empfangenden Store, mit genau
 msgid "Create refunds in BTCPay"
 msgstr "Erstattungen in BTCPay anlegen"
 
-msgid "Off by default: refunds are then done by hand in BTCPay and recorded in pretix. On, a refund in pretix creates a BTCPay pull payment that the buyer claims and someone approves in BTCPay; the API key then also needs btcpay.store.cancreatenonapprovedpullpayments."
-msgstr "Standardmäßig aus: Erstattungen macht das Team dann von Hand in BTCPay und trägt sie in pretix ein. An: Eine Erstattung in pretix legt ein Pull Payment in BTCPay an, das die Käuferin oder der Käufer abholt und jemand in BTCPay freigibt; der API-Schlüssel braucht dann auch btcpay.store.cancreatenonapprovedpullpayments."
+msgid "Off by default: refunds are then done by hand in BTCPay and recorded in pretix. On, the first refund of a payment in pretix creates a BTCPay pull payment that the buyer claims and someone approves in BTCPay; further ones of the same payment are done by hand. The API key then also needs btcpay.store.cancreatenonapprovedpullpayments."
+msgstr "Standardmäßig aus: Erstattungen macht das Team dann von Hand in BTCPay und trägt sie in pretix ein. An: Die erste Erstattung einer Zahlung in pretix legt ein Pull Payment in BTCPay an, das die Käuferin oder der Käufer abholt und jemand in BTCPay freigibt; weitere derselben Zahlung gehen von Hand. Der API-Schlüssel braucht dann auch btcpay.store.cancreatenonapprovedpullpayments."
+
+msgid "Refunds in BTCPay need Redis or memcached as pretix' cache."
+msgstr "Erstattungen in BTCPay brauchen Redis oder memcached als Cache von pretix."
+
+msgid "This refund was already sent to BTCPay."
+msgstr "Diese Erstattung ging schon an BTCPay."
+
+msgid "A refund of this payment was already sent to BTCPay ({earlier}). Check the pull payments in BTCPay, and do any further refund of this payment there by hand."
+msgstr "Eine Erstattung dieser Zahlung ging schon an BTCPay ({earlier}). Bitte die Pull Payments in BTCPay prüfen und jede weitere Erstattung dieser Zahlung dort von Hand anlegen."
+
+msgid "A refund was not sent to BTCPay, because an earlier refund of the same payment went there. Check BTCPay and do it there by hand."
+msgstr "Eine Erstattung ging nicht an BTCPay, weil schon eine frühere derselben Zahlung dort ist. Bitte in BTCPay prüfen und sie dort von Hand anlegen."
 
 msgid "Refunds in BTCPay need the permission btcpay.store.cancreatenonapprovedpullpayments."
 msgstr "Erstattungen in BTCPay brauchen das Recht btcpay.store.cancreatenonapprovedpullpayments."
