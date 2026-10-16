@@ -29,13 +29,29 @@ def verify_signature(secret: str, raw_body: bytes, sig_header: str | None) -> bo
     return hmac.compare_digest(expected.encode(), sig_header.strip().lower().encode())
 
 
+def _effective_port(parsed) -> int:
+    """The port a URL effectively uses: the explicit one, or the scheme's default."""
+    if parsed.port is not None:
+        return parsed.port
+    return 443 if parsed.scheme == "https" else 80
+
+
 def is_own_link(base_url: str, link: str) -> bool:
-    """Whether ``link`` points at the configured BTCPay instance, so we never redirect a buyer elsewhere."""
+    """
+    Whether ``link`` points at the configured BTCPay instance, so we never redirect a buyer elsewhere.
+    The scheme has to match exactly; the host is compared case-insensitively (``urlparse`` already
+    lowercases it) and a default port counts as its absence, so ``https://btcpay.example.com:443`` is
+    the same instance as ``https://btcpay.example.com``.
+    """
     try:
         base, target = urlparse(base_url), urlparse(link)
+        if base.scheme not in ("https", "http") or target.scheme != base.scheme:
+            return False
+        if not base.hostname or not target.hostname:
+            return False
+        return (target.hostname, _effective_port(target)) == (base.hostname, _effective_port(base))
     except ValueError:
         return False
-    return (target.scheme, target.netloc) == (base.scheme, base.netloc) and target.scheme in ("https", "http")
 
 
 def missing_permissions(permissions: list[str], store_id: str) -> tuple[list[str], list[str], list[str]]:

@@ -34,6 +34,17 @@ class LinkTest(unittest.TestCase):
         self.assertTrue(is_own_link("https://pay.example.org", "https://pay.example.org/i/ABC"))
         self.assertTrue(is_own_link("http://localhost:8348/", "http://localhost:8348/invoice?id=1"))
 
+    def test_normalization(self):
+        self.assertTrue(is_own_link("https://pay.example.org", "https://PAY.example.org/i/ABC"),
+                        "the host is compared case-insensitively")
+        self.assertTrue(is_own_link("https://pay.example.org", "https://pay.example.org:443/i/ABC"),
+                        "the https default port counts as its absence")
+        self.assertTrue(is_own_link("https://pay.example.org:443", "https://pay.example.org/i/ABC"))
+        self.assertTrue(is_own_link("http://localhost:8348/", "http://LOCALHOST:8348/invoice?id=1"))
+        self.assertFalse(is_own_link("https://pay.example.org", "https://pay.example.org:8443/i/ABC"))
+        self.assertFalse(is_own_link("https://pay.example.org:8443", "https://pay.example.org/i/ABC"),
+                         "a non-default port has to match")
+
     def test_foreign(self):
         for link in ("https://evil.example/i/ABC", "http://pay.example.org/i/ABC", "https://pay.example.org.evil/i",
                      "javascript:alert(1)", "//evil.example/", "", "https://pay.example.org@evil.example/"):

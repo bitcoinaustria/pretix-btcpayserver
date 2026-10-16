@@ -1,4 +1,5 @@
 import logging
+import threading
 from typing import Any
 from urllib.parse import quote
 
@@ -25,6 +26,18 @@ WEBHOOK_EVENTS = [
 
 TIMEOUT = (5, 15)
 
+# One session per thread: connections to the BTCPay host are reused (the poll alone asks for hundreds of
+# invoices per run, each a fresh TCP and TLS handshake otherwise), and cookies a response may set never
+# end up in another thread's session.
+_sessions = threading.local()
+
+
+def _session() -> requests.Session:
+    session = getattr(_sessions, "session", None)
+    if session is None:
+        session = _sessions.session = requests.Session()
+    return session
+
 
 class BTCPayError(PaymentException):
     """A call to BTCPay failed. ``status`` is the HTTP status, if there was a response."""
@@ -46,7 +59,7 @@ class BTCPayAPI:
 
     def _request(self, method: str, path: str, **kwargs) -> Any:
         try:
-            response = requests.request(
+            response = _session().request(
                 method,
                 self.url + path,
                 headers={"Authorization": f"token {self.api_key}", "Accept": "application/json"},

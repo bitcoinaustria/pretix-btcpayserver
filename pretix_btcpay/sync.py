@@ -251,7 +251,7 @@ def _record_surplus(provider, payment: OrderPayment, invoice: dict) -> None:
     """
     paid = _decimal(invoice.get("paidAmount"))
     info = payment.info_data
-    if paid - payment.amount <= _decimal(info.get("surplus_recorded")) or info.get("surplus_counted") == str(paid):
+    if paid - payment.amount <= _decimal(info.get("surplus_recorded")) or _decimal(info.get("surplus_counted")) == paid:
         if info.get("surplus_open"):
             _update_info(payment, surplus_open=False)
         return
@@ -390,7 +390,7 @@ def next_check(payment: OrderPayment, at: datetime) -> float | None:
         return checked + WATCH  # money on a closed invoice, until someone decides in BTCPay
     if (status == state.SETTLED and payment.state == OrderPayment.PAYMENT_STATE_CONFIRMED
             and _decimal(info.get("paid_amount")) - payment.amount > _decimal(info.get("surplus_recorded"))
-            and info.get("surplus_counted") != info.get("paid_amount")):
+            and _decimal(info.get("surplus_counted")) != _decimal(info.get("paid_amount"))):
         return checked + WATCH  # money beyond the amount that is not booked yet (unconfirmed, or BTCPay did not answer)
     if (monitoring is None or monitoring > at) or payment.created >= at - timedelta(days=2):
         return checked + WATCH  # late money on a settled invoice, a manual change, a lost webhook
