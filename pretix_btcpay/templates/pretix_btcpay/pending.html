@@ -2,6 +2,11 @@
 <div class="alert alert-info">
     {% if seen %}
         <p>{% trans "Your payment has arrived and is waiting for confirmation by the Bitcoin network. This usually takes about ten minutes; you do not have to do anything. Your order stays reserved in the meantime." %}</p>
+    {% elif reopened %}
+        <p>{% trans "Your payment has arrived, but not the full amount yet — it may have been replaced with a cheaper transaction. Please complete the payment: the remaining amount is shown on the payment page." %}</p>
+        {% if pay_url %}
+            <p><a class="btn btn-primary" href="{{ pay_url }}">{% trans "Complete payment" %}</a></p>
+        {% endif %}
     {% else %}
         <p>{% trans "Your payment is still pending." %}</p>
         {% if pay_url %}
@@ -14,13 +19,18 @@
 (function () {
     var statusUrl = "{{ status_url|escapejs }}";
     var initial = "{{ payment.state|escapejs }}";
+    var initialStatus = "{{ payment.info_data.status|default_if_none:""|escapejs }}";
     var tries = 0;
     function check() {
         tries += 1;
         fetch(statusUrl, {cache: "no-store", credentials: "same-origin"})
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (d) {
-                if (d && (d.paid === true || d.state !== initial)) { window.location.reload(); return; }
+                // The invoice can go back to New (a replacement transaction made the payment underpaid): that
+                // changes neither the payment state nor paid, only the stored invoice status.
+                if (d && (d.paid === true || d.state !== initial || d.invoice_status !== initialStatus)) {
+                    window.location.reload(); return;
+                }
                 // Every 5 seconds for 10 minutes, then every 30 seconds: the page may stay open for a long time.
                 setTimeout(check, tries < 120 ? 5000 : 30000);
             })

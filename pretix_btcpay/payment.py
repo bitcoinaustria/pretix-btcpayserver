@@ -309,12 +309,18 @@ class BTCPayServer(BasePaymentProvider):
                 locked = OrderPayment.objects.select_for_update(of=OF_SELF).get(pk=payment.pk)
                 info = locked.info_data
                 if info.get("invoice_id"):
+                    if (locked.state in (OrderPayment.PAYMENT_STATE_CREATED, OrderPayment.PAYMENT_STATE_PENDING)
+                            and info.get("status") == state.NEW
+                            and (info.get("expires") or 0) > now().timestamp()):
+                        # The invoice is still open and can still be completed: either the payment was never
+                        # seen, or a replacement transaction made a seen one underpaid again, which returns
+                        # the invoice from Processing to New in BTCPay. Either way the buyer has to get back
+                        # into it.
+                        return info["checkout_link"]
                     if locked.state in (OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_PENDING):
                         return self._order_url(payment.order)
-                    if (locked.state == OrderPayment.PAYMENT_STATE_CREATED and info.get("status") == state.NEW
-                            and (info.get("expires") or 0) > now().timestamp()):
-                        return info["checkout_link"]
-                    raise PaymentException(_("This payment has expired. Please start the payment again."))
+                    if locked.state == OrderPayment.PAYMENT_STATE_CREATED:
+                        raise PaymentException(_("This payment has expired. Please start the payment again."))
                 if locked.state != OrderPayment.PAYMENT_STATE_CREATED:
                     raise PaymentException(_("This payment can not be continued. Please start the payment again."))
                 order = payment.order
@@ -344,12 +350,22 @@ class BTCPayServer(BasePaymentProvider):
 
     def payment_pending_render(self, request, payment: OrderPayment) -> str:
         info = payment.info_data
+        if payment.state == OrderPayment.PAYMENT_STATE_CREATED:
+            pay_url = self._pay_url(payment)  # pretix' own page, which creates the invoice on demand
+        elif payment.state == OrderPayment.PAYMENT_STATE_PENDING and info.get("status") == state.NEW:
+            # The seen payment became underpaid again (a replacement transaction returned the invoice to New):
+            # the buyer completes it on the same invoice. pretix' own pay page refuses pending payments, so
+            # this goes straight to the checkout page of the still-open invoice, which shows what is missing.
+            pay_url = info.get("checkout_link")
+        else:
+            pay_url = None
         return get_template("pretix_btcpay/pending.html").render({
             "request": request,
             "event": self.event,
             "payment": payment,
-            "seen": payment.state == OrderPayment.PAYMENT_STATE_PENDING,
-            "pay_url": self._pay_url(payment) if payment.state == OrderPayment.PAYMENT_STATE_CREATED else None,
+            "seen": payment.state == OrderPayment.PAYMENT_STATE_PENDING and info.get("status") != state.NEW,
+            "reopened": payment.state == OrderPayment.PAYMENT_STATE_PENDING and info.get("status") == state.NEW,
+            "pay_url": pay_url,
             "has_invoice": bool(info.get("invoice_id")),
             "status_url": eventreverse(self.event, "plugins:pretix_btcpay:status", kwargs={
                 "order": payment.order.code, "secret": payment.order.secret, "payment": payment.pk}),

@@ -52,16 +52,20 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
   (default 15): the exchange rate is fixed while it runs, and after the deadline the seats may be sold again.
   The invoice asks for the configured speed policy and a payment tolerance of 0.
 - Each payment has exactly one invoice, created under a row lock in `execute_payment`. A payment whose invoice ran
-  out is not continued: pretix starts a new payment with a new invoice.
+  out is not continued: pretix starts a new payment with a new invoice. If a payment that the network has seen
+  becomes underpaid again (a replacement transaction returned the invoice to New), the buyer can complete it on
+  the same invoice.
 - A buyer who switches the payment method gets a new payment and invoice; the old invoice is left to run out (not
   invalidated in BTCPay, which could hit a payment arriving in the same second). If money still arrives on it and
   BTCPay settles it (or an admin marks it settled), that payment counts, and other open BTCPay payments of the now
   paid order are cancelled. Money is never silently dropped.
 - Money beyond the invoice amount (an over payment, or a second transfer to a settled invoice) is booked as its own
   confirmed payment once every payment on the invoice is confirmed (BTCPay's `paidAmount` also counts unconfirmed
-  ones), so pretix shows the order as overpaid and refunding it leaves the ticket paid.
+  ones), so pretix shows the order as overpaid and refunding it leaves the ticket paid. This also finishes an order
+  whose total was raised after the invoice was created, if the money now covers it.
 - If pretix confirmed a payment but could not mark the order paid (a lock timeout), the next webhook or poll
-  finishes it; if the seats are really gone, the order is flagged instead.
+  finishes it; if the seats are really gone, the order is flagged instead. The order row is locked while the
+  balance is checked and the order marked paid, so an edit that changes the total cannot slip in between.
 - Partial and late payments, and money on an expired or invalid invoice, are logged on the order ("Needs attention"
   in the payment details) for the team to handle in BTCPay. Refunds create a BTCPay pull payment the buyer claims with
   their own address and someone approves in BTCPay (only if refunds are switched on). One refund per payment goes
@@ -70,15 +74,21 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
   BTCPay created the claim. A refund without a clear answer is marked for a human; any further refund of the same
   payment is refused with the name of the earlier one, to be checked and done by hand in BTCPay. The ticket and each
   surplus are separate payments, so both can be refunded. The note lives only in the cache: Redis should persist.
-- Webhook, poll, checkout and cancelling work on an order one at a time, under a PostgreSQL advisory lock that lasts
-  until the surrounding transaction commits (cancelling runs inside pretix' own transaction) and never runs out. It
-  is only ever tried, never waited for in the database, so it cannot deadlock with pretix' row and quota locks. A
-  webhook that finds the order busy gets a 503 and BTCPay delivers it again; the poll takes the lock before it asks
-  BTCPay, skips a busy order without a request and takes it next time.
+- Webhook, poll and checkout reconciliation work on an order one at a time, under a PostgreSQL advisory lock that
+  lasts until the surrounding transaction commits and never runs out. Finalization also locks the order and its
+  payment rows across the balance check. Both kinds of lock are only tried, never waited for in the database:
+  pretix's own order edits and payment-method switches take rows in different orders. A webhook that finds the
+  order busy gets a 503 and BTCPay delivers it again; the poll skips it and retries. A busy advisory lock is checked
+  before asking BTCPay, so it costs no API request. Row contention found after reading the invoice is also retried.
+- The original reservation deadline stays recorded until every payment that needs the hold has finished. The last
+  invoice to close restores it (with at least ten minutes to retry), even if another invoice originally extended
+  the order. The markers are cleared when the hold is released or the order is paid, so a later payment starts a
+  new hold from the current deadline.
 - The poll asks about invoices that are due, longest unchecked first, at most 300 per run, and starts no new one
   after 45 seconds (one that is running finishes; the next run continues): open ones every minute, settled or
   closed ones pretix has not caught up with every few minutes, the rest every half hour while BTCPay still watches
   them or money beyond the amount is not booked yet, and uncounted closed ones every six hours for half a year.
+  Closed invoices with an unreleased reservation are checked every minute until it can be released.
   Refunded and failed payments are included, and it keeps running when the payment method is disabled. A settled
   invoice pretix has not counted, or whose order it has not marked paid, stays in the poll however old it is. It
   loads the plugin's payments of that half year each run, which is fine for thousands of payments, not for millions.
@@ -122,7 +132,13 @@ Accepted for the Bitcoin Zitadelle, and worth knowing before you rely on the plu
 ```bash
 python -m unittest discover -s tests -t .                  # the state machine and the security checks, without pretix
 docker exec -i <pretix container> pretix shell < tests/pretix_checks.py   # sync against a real pretix, fake invoices
+docker exec -i -e CHECK_EVENT=<organizer>/<test-event> <pretix container> pretix shell < tests/pretix_regressions.py
 ```
+
+The regression checks require a test-mode event and PostgreSQL. They use fake invoices, create temporary test
+orders and delete them afterwards, without changing payment settings or contacting BTCPay. They cover concurrent
+payment-method switching, row contention, balance protection, quota failures, surplus accounting and reservation
+cleanup when several invoices are in flight.
 
 End-to-end tests on regtest (on-chain, Lightning, expiry, partial, over and late payments, double spends,
 switched payment methods, lost webhooks, forged webhooks, refunds, a rush of buyers) live in the Bitcoin Zitadelle
@@ -140,7 +156,8 @@ Compared with upstream 0.1.1:
 - The webhook is registered when the settings are saved, with our own secret, under a lock; not lazily at the first
   sale, where concurrent buyers could end up with a secret that belongs to a deleted webhook.
 - API keys are checked against an allowlist: three required store permissions, one optional for refunds, nothing else.
-- Unconfirmed payments keep the order reserved, and a dropped one gives the seats back.
+- Unconfirmed payments keep the order reserved, and a dropped one gives the seats back unless another payment
+  still needs the reservation (one on its way in pretix, or one whose invoice has money on the way in BTCPay).
 - Invoices expire with the order at the latest, with explicit speed policy and zero payment tolerance.
 - Invoices are only created in `execute_payment`; emails link to pretix' own payment page instead of creating
   invoices while rendering.
