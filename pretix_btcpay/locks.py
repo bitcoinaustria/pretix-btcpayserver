@@ -3,9 +3,9 @@ PostgreSQL advisory locks for what has to happen one at a time: the work on an o
 registration of the webhook.
 
 Not a lease in the cache: that can run out while its owner still works, and it ends before pretix commits the
-transaction it ran in, so the next worker would act on a state that is not committed yet. Not a row lock either:
-pretix takes the order row and its quota locks in different orders on different paths, and waiting on a row here
-could close a cycle.
+transaction it ran in, so the next worker would act on a state that is not committed yet. This lock is separate
+from the short row locks used to protect balances and reservation cleanup in sync.py. Those rows are also acquired
+without waiting: pretix takes rows in different orders on different paths, and waiting could close a cycle.
 
 Inside a transaction the lock lasts until that transaction commits or rolls back; outside one it lasts for the
 block. It is only ever tried, never waited for inside PostgreSQL, so it cannot take part in a deadlock: after

@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
-from django.db import transaction
+from django.db import DatabaseError, transaction
 from django.db.models import Q, Sum
 from django.utils.timezone import now
 
@@ -48,18 +48,41 @@ class InvoiceMismatch(Exception):
 
 
 class OrderBusy(Exception):
-    """Another worker is applying an invoice to a payment of this order right now."""
+    """Another worker is reconciling this order or holds rows needed to reconcile it."""
 
 
 @contextmanager
 def order_lock(order_id: int, wait: float = 0):
     """
-    One worker at a time per order for everything that changes its BTCPay payments: the webhook, the poll, the
-    checkout and cancelling (locks.py: held until the surrounding transaction commits, never expires, no deadlocks).
-    Reentrant within a thread (cancelling a sibling from inside apply). ``wait`` seconds to try, then OrderBusy.
+    One worker at a time per order for invoice reconciliation by the webhook, poll or checkout. Held until the
+    surrounding transaction commits, never expires, and never waits inside PostgreSQL (locks.py). Reentrant within
+    a thread (checking a sibling from inside apply). ``wait`` seconds to try, then OrderBusy.
     """
     with advisory_lock(ORDER, order_id, wait=wait, busy=OrderBusy):
         yield
+
+
+@contextmanager
+def _order_rows(order_id: int):
+    """Lock the order and its payments until commit, without waiting on pretix's own mutations.
+
+    Order edits and payment-method switches take these rows in different orders. Both acquisitions must be
+    nonblocking: even after taking the order row, a payment row may belong to a worker waiting for that order.
+    Roll back the block before reporting contention, releasing any rows we already acquired. Locking all payments
+    also keeps their states stable and lets reservation cleanup clear markers left by earlier invoices.
+    """
+    try:
+        with transaction.atomic():
+            order = Order.objects.select_for_update(nowait=True, of=OF_SELF).get(pk=order_id)
+            payments = {
+                p.pk: p for p in order.payments.select_for_update(nowait=True, of=OF_SELF)
+            }
+            yield order, payments
+    except DatabaseError as e:
+        cause = e.__cause__
+        if (getattr(cause, "sqlstate", None) or getattr(cause, "pgcode", None)) == "55P03":
+            raise OrderBusy() from e  # PostgreSQL lock_not_available, not an unrelated database failure
+        raise
 
 
 def event_ref(event) -> str:
@@ -155,20 +178,36 @@ def _release_hold(payment: OrderPayment) -> None:
     A seen payment was dropped (double spend, never confirmed): give the order its old payment deadline back, with
     a few minutes to pay again, instead of holding the seats for a day.
     """
-    held_from = _timestamp(payment.info_data.get("held_from"))
-    order = Order.objects.get(pk=payment.order_id)
-    if not held_from or order.status != Order.STATUS_PENDING:
-        return
-    if order.payments.filter(state=OrderPayment.PAYMENT_STATE_PENDING).exclude(pk=payment.pk).exists():
-        return  # another payment is on its way and needs the reservation
-    back = max(held_from, now() + timedelta(minutes=10))
-    if order.expires <= back:
-        return
-    try:
-        extend_order(order, back)
-        order.log_action("pretix_btcpay.hold_released", data={"local_id": payment.local_id, "expires": back.isoformat()})
-    except OrderError as e:
-        logger.info("BTCPay: could not shorten order %s: %s", order.full_code, e)
+    with _order_rows(payment.order_id) as (order, payments):
+        held = []
+        for other in payments.values():
+            info = other.info_data if other.provider == PROVIDER else {}
+            if other.pk != payment.pk and (
+                other.state == OrderPayment.PAYMENT_STATE_PENDING
+                or (other.provider == PROVIDER and info.get("status") == state.PROCESSING)
+            ):
+                return  # includes money on a canceled BTCPay payment
+            if other.provider == PROVIDER and (original := _timestamp(info.get("held_from"))):
+                held.append((other, info, original))
+        if not held or order.status != Order.STATUS_PENDING:
+            return
+        # The last invoice to close need not own the hold: _hold_order skips extending an already reserved order.
+        # Keep the earliest original deadline until every in-flight payment has closed, regardless of close order.
+        back = max(min(original for _, _, original in held), now() + timedelta(minutes=10))
+        if order.expires > back:
+            try:
+                extend_order(order, back)
+            except OrderError as e:
+                logger.info("BTCPay: could not shorten order %s: %s", order.full_code, e)
+                return
+            order.log_action("pretix_btcpay.hold_released", data={"local_id": payment.local_id, "expires": back.isoformat()})
+        # Clear the markers even if the deadline was already shortened. A later hold must start from its own
+        # deadline, not the deadline of this completed group of invoices. The row locks keep cleanup atomic.
+        for other, info, _ in held:
+            del info["held_from"]
+            other.info_data = info
+            other.save(update_fields=["info"])
+    payment.refresh_from_db()
 
 
 def _mark_pending(payment: OrderPayment) -> None:
@@ -179,6 +218,23 @@ def _mark_pending(payment: OrderPayment) -> None:
             locked.save(update_fields=["state"])
             payment.order.log_action("pretix_btcpay.processing", data={"local_id": payment.local_id})
     payment.refresh_from_db()
+
+
+def _clear_paid_holds(order: Order, payments: dict) -> None:
+    """Forget a completed hold while its order and payment rows are still locked.
+
+    A later order upgrade can need another payment and another hold. Its deadline must not be restored from a
+    marker left by a payment that already finished this order.
+    """
+    held = [p for p in payments.values() if p.provider == PROVIDER and "held_from" in p.info_data]
+    if not held or not Order.objects.filter(pk=order.pk, status=Order.STATUS_PAID).exists():
+        return
+    for payment in held:
+        payment.refresh_from_db(fields=["info"])
+        info = payment.info_data
+        info.pop("held_from", None)
+        payment.info_data = info
+        payment.save(update_fields=["info"])
 
 
 def _net_paid(order: Order) -> Decimal:
@@ -205,13 +261,17 @@ def _catch_up_order(payment: OrderPayment, invoice: dict) -> None:
     try:
         # apply holds the order lock until its changes are committed, so no other webhook, poll or checkout confirms
         # or catches up at the same time; read the order fresh anyway before marking it paid. pretix takes its quota
-        # locks inside.
-        with transaction.atomic():
-            order = Order.objects.get(pk=payment.order_id)
+        # locks inside. The rows are locked as well: pretix' own edits do not know the advisory lock, and
+        # _mark_order_paid does not recheck the balance. Never wait for these rows: a payment-method switch
+        # may already own a payment row while waiting for the order (_order_rows).
+        with _order_rows(payment.order_id) as (order, payments):
             net = _net_paid(order)
             if order.status not in (Order.STATUS_PENDING, Order.STATUS_EXPIRED) or net < order.total:
                 return
-            OrderPayment.objects.get(pk=payment.pk)._mark_order_paid(payment_refund_sum=net)
+            locked = payments[payment.pk]
+            locked.order = order
+            locked._mark_order_paid(payment_refund_sum=net)
+            _clear_paid_holds(order, payments)
         order.log_action("pretix_btcpay.order_caught_up", data={"local_id": payment.local_id})
     except Quota.QuotaExceededException as e:
         logger.warning("BTCPay: payment %s is confirmed, but order %s can not be marked paid: %s",
@@ -264,13 +324,12 @@ def _record_surplus(provider, payment: OrderPayment, invoice: dict) -> None:
     # Never more than BTCPay itself counts (its paidAmount is net of payment method fees), never unconfirmed money,
     # and rounded down to the cent.
     surplus = min(confirmed.quantize(CENT, rounding=ROUND_DOWN), paid) - payment.amount
-    if Order.objects.get(pk=payment.order_id).status != Order.STATUS_PAID:
-        # Booking it now could mark an order paid that lost its seats; the team sees the note and decides.
-        _note(payment, state.NOTE_OVERPAID, invoice, key=str(surplus))
-        return
-    # All in one transaction, the marker with the booked payment: a crash in between leaves neither.
-    with transaction.atomic():
-        locked = OrderPayment.objects.select_for_update(of=OF_SELF).get(pk=payment.pk)
+    # All in one transaction, the marker with the booked payment: a crash in between leaves neither. The order row
+    # is locked across the booking (see _catch_up_order for why): if the order is not paid yet, confirm() marks it
+    # paid here, and an order edit must not slip past the balance check in between.
+    with _order_rows(payment.order_id) as (order, payments):
+        locked = payments[payment.pk]
+        locked.order = order
         info = locked.info_data
         delta = surplus - _decimal(info.get("surplus_recorded"))
         # Done with this paidAmount only if the settled receipts really add up to it, give or take the fraction of a
@@ -290,8 +349,18 @@ def _record_surplus(provider, payment: OrderPayment, invoice: dict) -> None:
             provider=PROVIDER, amount=delta, state=OrderPayment.PAYMENT_STATE_CREATED,
             info=json.dumps({"surplus_of": locked.pk, "invoice_id": invoice.get("id"), "status": state.SETTLED}),
         )
-        # The order is paid already: confirm() only books the money and leaves the order as it is.
-        extra.confirm(send_mail=False)
+        try:
+            # Usually the order is paid already and confirm() only books the money. If it is not (the total may
+            # have been raised after the invoice was created), the surplus now covers the difference and
+            # confirm() finalizes the order; if the seats are gone, the quota exception leaves the payment
+            # confirmed and flags the order, like everywhere else.
+            extra.confirm()
+        except Quota.QuotaExceededException as e:
+            logger.warning("BTCPay: surplus of %s confirmed but order %s not paid: %s",
+                           payment.full_id, locked.order_id, e)
+            _update_info(payment, quota_exceeded=True)
+            _note(payment, "quota_exceeded", invoice)
+        _clear_paid_holds(order, payments)
     payment.refresh_from_db()
     _note(payment, state.NOTE_OVERPAID, invoice, key=str(surplus))
 
@@ -336,21 +405,27 @@ def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
                                                       "status": invoice.get("status")})
         _release_hold(payment)
     elif decision.action == "confirm":
-        try:
-            payment.confirm()
-        except Quota.QuotaExceededException as e:
-            # The payment counts, the order could not be marked paid (seats gone after it expired).
-            logger.warning("BTCPay: payment %s confirmed but order not paid: %s", payment.full_id, e)
-            _update_info(payment, quota_exceeded=True)
-            _note(payment, "quota_exceeded", invoice)
+        # The order row is locked across confirm() (see _catch_up_order): pretix checks the balance in a
+        # transaction of its own and marks the order paid in another, and an order edit in between could
+        # otherwise leave an underpaid order marked paid. The quota exception is caught inside the block,
+        # since letting it out would roll the payment confirmation back with it: the payment counts even
+        # when the seats are gone.
+        with _order_rows(payment.order_id) as (order, payments):
+            try:
+                payment.confirm()
+            except Quota.QuotaExceededException as e:
+                # The payment counts, the order could not be marked paid (seats gone after it expired).
+                logger.warning("BTCPay: payment %s confirmed but order not paid: %s", payment.full_id, e)
+                _update_info(payment, quota_exceeded=True)
+                _note(payment, "quota_exceeded", invoice)
+            _clear_paid_holds(order, payments)
         payment.refresh_from_db()
 
     if invoice.get("status") == state.SETTLED and payment.state == OrderPayment.PAYMENT_STATE_CONFIRMED:
         _catch_up_order(payment, invoice)
         _record_surplus(provider, payment, invoice)
         _close_siblings(payment)
-    if (decision.action != "fail" and invoice.get("status") in (state.EXPIRED, state.INVALID)
-            and payment.info_data.get("held_from")):
+    if decision.action != "fail" and invoice.get("status") in (state.EXPIRED, state.INVALID):
         # Money that was on its way to a given-up payment never arrived: the seats are free again.
         _release_hold(payment)
     return decision.action
@@ -376,6 +451,9 @@ def next_check(payment: OrderPayment, at: datetime) -> float | None:
     status = info.get("status")
     monitoring = _timestamp(info.get("monitoring_until"))
     counted = payment.state in (OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED)
+    if (info.get("held_from") and not counted and payment.order.status == Order.STATUS_PENDING
+            and status in (state.EXPIRED, state.INVALID)):
+        return checked + ACTIVE  # a sibling may still need the hold, or row contention prevented releasing it
     if not state.is_final(status, monitoring, at):
         return checked + ACTIVE
     if status == state.SETTLED and not counted:

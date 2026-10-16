@@ -111,6 +111,7 @@ def status(request, *args, **kwargs):
         payment = order.payments.get(pk=int(kwargs.get("payment")), provider=PROVIDER)
     except (OrderPayment.DoesNotExist, TypeError, ValueError):
         return HttpResponseNotFound()
-    response = JsonResponse({"state": payment.state, "paid": order.status == Order.STATUS_PAID})
+    response = JsonResponse({"state": payment.state, "paid": order.status == Order.STATUS_PAID,
+                             "invoice_status": payment.info_data.get("status") or ""})
     response["Cache-Control"] = "no-store"
     return response
