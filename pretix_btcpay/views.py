@@ -33,7 +33,11 @@ def webhook(request, *args, **kwargs):
     prov = _provider(request.event)
     if not prov or not prov.configured:
         return HttpResponse("Not configured", status=503)
-    if int(request.META.get("CONTENT_LENGTH") or 0) > MAX_BODY:
+    try:
+        declared = int(request.META.get("CONTENT_LENGTH") or 0)
+    except ValueError:
+        declared = 0  # a header the server did not sanity-check; the body check below still applies
+    if declared > MAX_BODY:
         return HttpResponse("Payload too large", status=413)
     raw_body = request.body
     if len(raw_body) > MAX_BODY:

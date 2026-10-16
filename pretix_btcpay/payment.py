@@ -397,10 +397,17 @@ class BTCPayServer(BasePaymentProvider):
         info = payment.info_data
         invoice, error = None, None
         if info.get("invoice_id") and self.configured and not is_surplus(payment):
-            try:
-                invoice = self.client.get_invoice(str(self.settings.store_id), info["invoice_id"])
-            except BTCPayError:
-                error = True
+            # Read through a short cache, so a slow or unreachable BTCPay Server does not slow the order
+            # page down. Failures are not cached, and the payment's own info always comes from the poll.
+            key = f"pretix_btcpay_invoice_{info['invoice_id']}"
+            invoice = cache.get(key)
+            if invoice is None:
+                try:
+                    invoice = self.client.get_invoice(str(self.settings.store_id), info["invoice_id"])
+                except BTCPayError:
+                    error = True
+                else:
+                    cache.set(key, invoice, timeout=30)
         return get_template("pretix_btcpay/control.html").render({
             "request": request,
             "payment": payment,
