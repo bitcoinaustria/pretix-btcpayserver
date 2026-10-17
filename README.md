@@ -67,13 +67,13 @@ existing payment integration: older invoices are not migrated automatically.
 | BTCPay invoice | pretix payment | order |
 |---|---|---|
 | `New` (also partially paid) | created | pending until its payment deadline |
-| `Processing`: fully paid, not yet confirmed | pending | unpaid; seats held until the invoice’s `monitoringExpiration` + 1 hour |
+| `Processing`: fully paid, not yet confirmed | pending | unpaid; hold target is `monitoringExpiration` + 1 hour (see caveat below) |
 | `Settled` (also `PaidOver`, `Marked`) | confirmed, also after it failed or was cancelled; money beyond the amount becomes its own confirmed payment | paid (overpaid) if the current total is covered and quota permits |
 | `Expired` (also `PaidPartial`, `PaidLate`) | failed | back to its old payment deadline |
 | `Invalid` | failed; a confirmed payment is only flagged | back to its old payment deadline |
 
 - Unconfirmed on-chain funds never pay an order: `Processing` means pending, with seats held until the invoice's
-  `monitoringExpiration` plus one hour. Only `Settled` confirms the payment. Reconciliation refuses `HighSpeed`,
+  `monitoringExpiration` plus one hour as the hold target. Only `Settled` confirms the payment. Reconciliation refuses `HighSpeed`,
   unknown or missing speed policies. Lightning settles immediately. An admin's “Mark settled” is trusted; verify
   funds before using it.
 - The webhook payload is only used for the invoice id: the plugin reads the invoice back from the API and checks
@@ -137,6 +137,11 @@ existing payment integration: older invoices are not migrated automatically.
 - The pending page polls a status endpoint that needs the order secret and only reads the database.
 
 ## Known limitations
+
+The current reservation-extension check keeps an existing deadline when it is up to five minutes before the hold
+target. That can leave only 55 minutes after monitoring expires, instead of the required full hour. The regression
+`test_hold_cannot_end_four_minutes_before_monitoring_plus_one_hour` exposes this unresolved shortfall; correct it
+before relying on a strict one-hour recovery margin.
 
 - The control-panel invoice display caches successful API reads for 30 seconds, scoped by event, server, store and
   invoice. A cold cache or outage still performs a synchronous request (5-second connect and 15-second read timeouts);

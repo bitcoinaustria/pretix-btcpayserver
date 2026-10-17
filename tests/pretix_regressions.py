@@ -170,6 +170,21 @@ class PaymentRegressions(unittest.TestCase):
                     self.assertFalse(order.ticket_download_available)
                 self.assertFalse(order.all_logentries().filter(action_type="pretix.event.order.payment.confirmed").exists())
 
+    def test_hold_cannot_end_four_minutes_before_monitoring_plus_one_hour(self):
+        order, first = self.make_order(payment_state="canceled")
+        earlier = self.invoice(first, state.PROCESSING, monitoring_hours=3)
+        sync.apply(self.provider, first, earlier, "regression")
+        payment = self.add_payment(order, "created")
+        invoice = self.invoice(payment, state.PROCESSING, monitoring_hours=3)
+        invoice["monitoringExpiration"] = earlier["monitoringExpiration"] + 4 * 60
+        required = sync._timestamp(invoice["monitoringExpiration"]) + timedelta(hours=1)
+        # The earlier invoice's hold must not truncate the later invoice's full recovery margin.
+        sync.apply(self.provider, payment, invoice, "regression")
+        order.refresh_from_db()
+        payment.refresh_from_db()
+        self.assertEqual((order.status, payment.state), (Order.STATUS_PENDING, "pending"))
+        self.assertGreaterEqual(order.expires, required)
+
     def test_unsafe_or_malformed_speed_policy_cannot_change_payment_or_hold(self):
         for checkout in (None, [], "MediumSpeed", 1, {}, {"speedPolicy": "HighSpeed"},
                          {"speedPolicy": "Unknown"}, {"speedPolicy": None}):
