@@ -42,6 +42,8 @@ NOTE_SETTLED_AFTER_REFUND = "settled_after_refund"
 NOTE_MONEY_ON_CLOSED = "money_on_closed_invoice"
 # A second payment settled for an order that was already paid: the whole amount is to be refunded.
 NOTE_PAID_TWICE = "double_payment"
+# The invoice lives in another store or on another server than the one configured now; we cannot read it any more.
+NOTE_OTHER_STORE = "other_store"
 
 
 @dataclass(frozen=True)

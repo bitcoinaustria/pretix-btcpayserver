@@ -278,3 +278,9 @@ msgstr "Zahlung vervollständigen"
 
 msgid "Your payment has arrived, but not the full amount yet — it may have been replaced with a cheaper transaction. Please complete the payment: the remaining amount is shown on the payment page."
 msgstr "Deine Zahlung ist angekommen, aber noch nicht der volle Betrag. Vielleicht wurde sie durch eine günstigere Transaktion ersetzt. Bitte vervollständige die Zahlung: Der Restbetrag steht auf der Zahlungsseite."
+
+msgid "This payment's invoice was created in another BTCPay store or on another server than the one configured now. Check it there; pretix cannot see it any more."
+msgstr "Die Rechnung dieser Zahlung wurde in einem anderen BTCPay-Store oder auf einem anderen Server angelegt als dem jetzt eingestellten. Bitte dort nachsehen; pretix kann sie nicht mehr abfragen."
+
+msgid "{count} BTCPay invoices of this event can still be paid or are not booked yet. Change the server or store only after they have run out or are booked."
+msgstr "{count} BTCPay-Rechnungen dieses Events können noch bezahlt werden oder sind noch nicht verbucht. Server oder Store erst wechseln, wenn sie abgelaufen oder verbucht sind."

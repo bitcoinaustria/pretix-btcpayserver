@@ -582,6 +582,66 @@ with scope(organizer=event.organizer):
         BTCPayAPI.get_invoice, views.apply = original_get, original_apply
     check(getattr(response, "status_code", None) == 200, f"gelöscht: 200, keine erneute Zustellung ({response!r})")
 
+    print("Store oder Server gewechselt")
+    from django.core.exceptions import ValidationError
+    from pretix.base.forms import SECRET_REDACTED
+    order, payment, inv = order_with_payment()
+    elsewhere = payment.info_data
+    elsewhere.update({"store_id": "ALTERSTORE", "server": str(provider.settings.url).rstrip("/")})
+    payment.info_data = elsewhere
+    payment.save(update_fields=["info"])
+    asked_elsewhere = []
+    original_get = BTCPayAPI.get_invoice
+    BTCPayAPI.get_invoice = lambda self, store_id, invoice_id: asked_elsewhere.append(invoice_id) or invoice(payment, inv, state.SETTLED)
+    try:
+        for _ in range(2):
+            sync.sync_payment(provider, payment, "check")
+    finally:
+        BTCPayAPI.get_invoice = original_get
+    reload(order, payment)
+    moved_notes = order.all_logentries().filter(action_type="pretix_btcpay.other_store").count()
+    check(not asked_elsewhere and payment.state == "created" and order.status == "n" and moved_notes == 1,
+          f"Rechnung aus anderem Store: nicht abgefragt, nichts gebucht, einmal vermerkt ({len(asked_elsewhere)}, {moved_notes})")
+
+    order, payment, inv = order_with_payment()  # offen, im eingestellten Store
+    ident = provider.identifier
+
+    def settings_save(store_id):
+        original_key = BTCPayAPI.current_key
+        BTCPayAPI.current_key = lambda self: (_ for _ in ()).throw(_Err("nein", status=401))  # nach unserer Prüfung abbrechen
+        try:
+            provider.settings_form_clean({f"payment_{ident}_url": str(provider.settings.url),
+                                          f"payment_{ident}_api_key": SECRET_REDACTED, f"payment_{ident}_store_id": store_id})
+        except ValidationError as e:
+            return " ".join(e.messages)
+        finally:
+            BTCPayAPI.current_key = original_key
+        return ""
+
+    refused = settings_save("NEUERSTORE")
+    check("BTCPay invoices of this event" in refused or "BTCPay-Rechnungen dieses Events" in refused,
+          f"Storewechsel mit offenen Rechnungen: abgelehnt ({refused[:60]})")
+    unchanged = settings_save(store)
+    check("invoices of this event" not in unchanged and "Rechnungen dieses Events" not in unchanged,
+          f"gleicher Store: nicht wegen offener Rechnungen abgelehnt ({unchanged[:60]})")
+    at = now()
+    payment.confirm()
+    done = payment.info_data
+    done.update({"status": state.SETTLED})
+    payment.info_data = done
+    payment.save(update_fields=["info"])
+    payment.refresh_from_db()
+    gone = payment.info_data
+    expired = order.payments.create(provider=sync.PROVIDER, amount=order.total, state=OrderPayment.PAYMENT_STATE_FAILED,
+                                    info=json.dumps({"invoice_id": "CHECKGONE", "status": state.EXPIRED,
+                                                     "monitoring_until": int((at - timedelta(hours=1)).timestamp())}))
+    late = order.payments.create(provider=sync.PROVIDER, amount=order.total, state=OrderPayment.PAYMENT_STATE_FAILED,
+                                 info=json.dumps({"invoice_id": "CHECKLATE", "status": state.EXPIRED,
+                                                  "monitoring_until": int((at + timedelta(hours=1)).timestamp())}))
+    check(not sync.still_open(payment, at) and not sync.still_open(expired, at) and sync.still_open(late, at)
+          and gone.get("status") == state.SETTLED,
+          "offen: verbucht und abgelaufen nein, abgelaufen, aber noch überwacht ja")
+
     for pk in OrderPayment.objects.filter(order__pk__in=created).values_list("pk", flat=True):
         _cache.delete(f"pretix_btcpay_refund_{pk}")
     other.close()
