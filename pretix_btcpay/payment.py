@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import secrets
@@ -415,7 +416,9 @@ class BTCPayServer(BasePaymentProvider):
         if info.get("invoice_id") and self.configured and not is_surplus(payment):
             # Read through a short cache, so a slow or unreachable BTCPay Server does not slow the order
             # page down. Failures are not cached, and the payment's own info always comes from the poll.
-            key = f"pretix_btcpay_invoice_{info['invoice_id']}"
+            # Keyed by event, server and store as well: an invoice id is only unique within one BTCPay store.
+            scope = hashlib.sha256(f"{self.event.pk}|{self.client.url}|{self.settings.store_id}".encode()).hexdigest()[:16]
+            key = f"pretix_btcpay_invoice_{scope}_{info['invoice_id']}"
             invoice = cache.get(key)
             if invoice is None:
                 try:
