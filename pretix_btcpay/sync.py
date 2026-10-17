@@ -423,6 +423,11 @@ def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
         # since letting it out would roll the payment confirmation back with it: the payment counts even
         # when the seats are gone.
         with _order_rows(payment.order_id) as (order, payments):
+            if payments[payment.pk].state == OrderPayment.PAYMENT_STATE_REFUNDED:
+                # The backend may have confirmed and refunded it since decide(); confirm() only guards against
+                # another confirmation, so it would otherwise turn the refunded payment back into confirmed.
+                _note(payment, state.NOTE_SETTLED_AFTER_REFUND, invoice, key=str(paid))
+                return "none"
             # Already paid, and still covered after refunds: this money comes on top. Read under the row lock, and
             # only if this payment is not confirmed yet: someone in the backend may have confirmed it meanwhile.
             paid_before = (payments[payment.pk].state != OrderPayment.PAYMENT_STATE_CONFIRMED

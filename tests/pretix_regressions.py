@@ -20,7 +20,7 @@ from django.db import DatabaseError, connection, connections, transaction
 from django.test import RequestFactory
 from django.utils.timezone import now
 from django_scopes import scope, scopes_disabled
-from pretix.base.models import Event, Order, OrderFee, OrderPayment
+from pretix.base.models import Event, Order, OrderFee, OrderPayment, OrderRefund
 from pretix.base.services.orders import change_payment_provider
 
 from pretix_btcpay import state, sync, views
@@ -321,6 +321,31 @@ class PaymentRegressions(unittest.TestCase):
         payment.refresh_from_db()
         self.assertEqual(payment.state, "pending")
         self.assertGreater(order.expires, now() + timedelta(hours=24))
+
+    def test_confirmation_cannot_reverse_a_concurrent_refund(self):
+        order, payment = self.make_order()
+        original = state.decide
+        completed = []
+
+        def refund_after_decision(*args, **kwargs):
+            decision = original(*args, **kwargs)
+            if not completed:
+                current = OrderPayment.objects.get(pk=payment.pk)
+                current.confirm()
+                refund = order.refunds.create(
+                    payment=current, source=OrderRefund.REFUND_SOURCE_ADMIN,
+                    state=OrderRefund.REFUND_STATE_CREATED, amount=current.amount, provider="manual",
+                )
+                refund.done()
+                completed.append(True)
+            return decision
+
+        with patch.object(state, "decide", refund_after_decision):
+            sync.apply(self.provider, payment, self.invoice(payment, state.SETTLED), "regression")
+        payment.refresh_from_db()
+        self.assertEqual(payment.state, "refunded")
+        self.assertEqual(order.all_logentries().filter(action_type="pretix.event.order.payment.confirmed").count(), 1)
+        self.assertEqual(order.all_logentries().filter(action_type="pretix_btcpay.settled_after_refund").count(), 1)
 
     def test_hold_waits_for_pending_payment_from_another_provider(self):
         order, payment = self.make_order(payment_state="canceled")
