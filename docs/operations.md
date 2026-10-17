@@ -65,8 +65,10 @@ store credentials while invoices still need reconciliation without an explicit m
 
 The payment settings form refuses a different server or store while any payment of the event still needs its
 invoice: a created/pending payment with an invoice, a non-final invoice (expired invoices stay open until their
-monitoring deadline), a settled invoice whose base payment is not booked, a confirmed payment whose order is not
-marked paid yet, or a confirmed payment with extra money not booked yet (`surplus_open`, or more paid than booked).
+monitoring deadline), a settled invoice whose base payment is not booked, or a settled invoice with a confirmed
+payment whose extra money is not booked yet (`surplus_open`, or more paid than booked). A settled, confirmed payment
+also blocks a change while its pending/expired order still needs automatic finalization; an already flagged quota
+failure requires manual recovery instead.
 This holds when the payment method is disabled too, and when URL or store is cleared. Rotating the API key on the
 same server/store is allowed. Scheme/host case, default ports and trailing slashes do not make an equivalent address
 a new server.
@@ -75,6 +77,10 @@ A change and invoice creation are serialized per event: a checkout holds the eve
 its invoice is stored, a change holds it exclusively until pretix commits the settings. A change therefore sees every
 invoice created with the old connection; a checkout waiting for a change refuses to create an invoice with the
 replaced settings and asks the buyer to try again (`tests/pretix_settings_race.py`).
+An unchanged settings save also holds the shared lock until it commits, so an overlapping change cannot be undone
+by its older form. Validation reloads the stored connection before and after taking the lock; if another request
+changed it meanwhile, the form asks the operator to try again (`tests/pretix_settings_stale.py` and
+`tests/pretix_settings_surface.py`).
 
 New invoices remember their server and store. Should a payment from another origin still turn up (for example one
 created by an older plugin version, or settings edited directly in the database), reconciliation skips it without
