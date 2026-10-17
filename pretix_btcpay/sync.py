@@ -491,6 +491,15 @@ def still_open(payment: OrderPayment, at: datetime) -> bool:
     if not info.get("invoice_id") or is_surplus(payment):
         return False
     counted = payment.state in (OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED)
+    if info.get("status") == state.SETTLED and payment.state == OrderPayment.PAYMENT_STATE_CONFIRMED:
+        # A counted base payment can still need its surplus booked or its order finalized. Switching stores would
+        # strand that recovery just like an uncounted payment, even when the invoice itself is already final.
+        if (info.get("surplus_open")
+                or (_decimal(info.get("paid_amount")) - payment.amount > _decimal(info.get("surplus_recorded"))
+                    and _decimal(info.get("surplus_counted")) != _decimal(info.get("paid_amount")))
+                or (payment.order.status in (Order.STATUS_PENDING, Order.STATUS_EXPIRED)
+                    and not info.get("quota_exceeded"))):
+            return True
     return (payment.state in (OrderPayment.PAYMENT_STATE_CREATED, OrderPayment.PAYMENT_STATE_PENDING)
             or not state.is_final(info.get("status"), _timestamp(info.get("monitoring_until")), at)
             or (info.get("status") == state.SETTLED and not counted))

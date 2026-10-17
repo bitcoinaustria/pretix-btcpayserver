@@ -16,6 +16,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import Mock, PropertyMock, patch
 
+from django.core.exceptions import ValidationError
 from django.db import DatabaseError, connection, connections, transaction
 from django.test import RequestFactory
 from django.utils.timezone import now
@@ -25,6 +26,8 @@ from pretix.base.models import Event, Order, OrderFee, OrderPayment, OrderRefund
 from pretix.base.services.orders import change_payment_provider
 
 from pretix_btcpay import state, sync, views
+from pretix_btcpay.api import BTCPayError
+from pretix_btcpay.checks import REQUIRED_PERMISSIONS
 from pretix_btcpay.payment import BTCPayServer
 
 ORGANIZER, EVENT = os.environ.get("CHECK_EVENT", "zitadelle/2027").split("/")
@@ -93,6 +96,95 @@ class PaymentRegressions(unittest.TestCase):
         with other.cursor() as cursor:
             cursor.execute("SET statement_timeout = '5s'")
         return other
+
+    def check_store_switch(self, payment, blocked):
+        provider = BTCPayServer(EVENT_OBJECT)
+        settings = SimpleNamespace(url="https://example.org", store_id="REVIEW", api_key="test-key")
+        client = Mock()
+        client.current_key.return_value = {"permissions": [p + ":OTHER" for p in REQUIRED_PERMISSIONS]}
+        data = {f"payment_{sync.PROVIDER}_{k}": v for k, v in
+                {"url": settings.url, "store_id": "OTHER", "api_key": settings.api_key}.items()}
+        # Only this test's order participates; unrelated invoices on the shared test event must not mask a failure.
+        payments = OrderPayment.objects.filter(pk=payment.pk)
+        with patch.object(provider, "settings", settings), patch.object(provider, "ensure_webhook") as ensure, \
+                patch("pretix_btcpay.payment.OrderPayment.objects.filter", return_value=payments), \
+                patch("pretix_btcpay.payment.BTCPayAPI", return_value=client):
+            if blocked:
+                with self.assertRaisesRegex(ValidationError, "invoices of this event"):
+                    provider.settings_form_clean(data)
+                client.current_key.assert_not_called()
+                ensure.assert_not_called()
+            else:
+                self.assertEqual(provider.settings_form_clean(data), data)
+                ensure.assert_called_once()
+
+    def test_store_switch_waits_until_settled_surplus_is_booked(self):
+        for interrupted in ("receipts_unavailable", "before_marker", "unconfirmed_extra"):
+            with self.subTest(interrupted=interrupted):
+                order, payment = self.make_order()
+                invoice = self.invoice(payment, state.SETTLED, "399.00")
+                if interrupted == "before_marker":
+                    with patch.object(sync, "_record_surplus", side_effect=RuntimeError("Worker died")):
+                        with self.assertRaisesRegex(RuntimeError, "Worker died"):
+                            sync.apply(self.provider, payment, invoice, "regression")
+                else:
+                    receipts = (Mock(side_effect=BTCPayError("outage")) if interrupted == "receipts_unavailable"
+                                else Mock(return_value=[{"rate": "1", "payments": [
+                                    {"status": "Settled", "value": "266.00"},
+                                    {"status": "Processing", "value": "133.00"},
+                                ]}]))
+                    with patch.object(self.provider.client, "get_invoice_payment_methods", receipts):
+                        sync.apply(self.provider, payment, invoice, "regression")
+                payment.refresh_from_db()
+                order.refresh_from_db()
+                self.assertEqual((payment.state, order.status), ("confirmed", Order.STATUS_PAID))
+                self.assertEqual(sync._net_paid(order), Decimal("266.00"))
+                self.check_store_switch(payment, blocked=True)
+                sync.apply(self.provider, payment, invoice, "regression")
+                payment.refresh_from_db()
+                self.assertEqual(sync._net_paid(order), Decimal("399.00"))
+                self.check_store_switch(payment, blocked=False)
+
+    def test_store_switch_waits_until_confirmed_payment_finishes_its_order(self):
+        order, payment = self.make_order()
+        invoice = self.invoice(payment, state.SETTLED)
+        # pretix's backend confirms outside our row-lock transaction; its second transaction can fail afterwards.
+        with patch.object(OrderPayment, "_mark_order_paid", side_effect=RuntimeError("Worker died")):
+            with self.assertRaisesRegex(RuntimeError, "Worker died"):
+                payment.confirm()
+        with patch.object(sync, "_catch_up_order", side_effect=sync.OrderBusy):
+            with self.assertRaises(sync.OrderBusy):
+                sync.apply(self.provider, payment, invoice, "regression")
+        payment.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual((payment.state, order.status), ("confirmed", Order.STATUS_PENDING))
+        self.assertEqual(sync._net_paid(order), order.total)
+        self.check_store_switch(payment, blocked=True)
+        sync.apply(self.provider, payment, invoice, "regression")
+        payment.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.STATUS_PAID)
+        self.check_store_switch(payment, blocked=False)
+
+    def test_invoice_origin_guard_skips_other_stores_and_accepts_the_same_server(self):
+        order, payment = self.make_order()
+        self.provider.settings.url = "https://example.org"
+        payment.info_data = {**payment.info_data, **sync.invoice_origin(self.provider)}
+        payment.save(update_fields=["info"])
+        self.provider.client.get_invoice = Mock(return_value=self.invoice(payment, state.NEW, "0"))
+        for server, store in (("https://example.org", "OTHER"), ("https://other.example.org", "REVIEW")):
+            self.provider.settings.url, self.provider.settings.store_id = server, store
+            for _ in range(2):
+                self.assertIsNone(sync.sync_payment(self.provider, payment, "regression"))
+        self.provider.client.get_invoice.assert_not_called()
+        payment.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual((payment.state, order.status), ("created", Order.STATUS_PENDING))
+        self.assertTrue(payment.info_data.get("checked"))
+        self.assertEqual(order.all_logentries().filter(action_type="pretix_btcpay.other_store").count(), 1)
+        self.provider.settings.url, self.provider.settings.store_id = "HTTPS://EXAMPLE.ORG:443/", "REVIEW"
+        sync.sync_payment(self.provider, payment, "regression")
+        self.provider.client.get_invoice.assert_called_once_with("REVIEW", payment.info_data["invoice_id"])
 
     def test_api_reuses_connections_within_a_thread_without_sharing_sessions(self):
         from pretix_btcpay import api
