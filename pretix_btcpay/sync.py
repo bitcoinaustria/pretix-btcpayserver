@@ -457,10 +457,39 @@ def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
     return decision.action
 
 
+def invoice_origin(provider) -> dict:
+    """Where invoices are created right now; stored with each invoice, so a later switch cannot mix them up."""
+    return {"server": str(provider.settings.url or "").rstrip("/"), "store_id": str(provider.settings.store_id or "")}
+
+
+def created_elsewhere(provider, payment: OrderPayment) -> bool:
+    """Whether the payment's invoice was created in another store or on another server than the configured one."""
+    info, current = payment.info_data, invoice_origin(provider)
+    # Invoices from before the origin was stored have none; they can only come from the configured store.
+    return any(info.get(k) not in (None, current[k]) for k in current)
+
+
+def still_open(payment: OrderPayment, at: datetime) -> bool:
+    """Whether BTCPay may still change something about this payment's invoice that pretix has to book."""
+    info = payment.info_data
+    if not info.get("invoice_id") or is_surplus(payment):
+        return False
+    counted = payment.state in (OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED)
+    return (payment.state in (OrderPayment.PAYMENT_STATE_CREATED, OrderPayment.PAYMENT_STATE_PENDING)
+            or not state.is_final(info.get("status"), _timestamp(info.get("monitoring_until")), at)
+            or (info.get("status") == state.SETTLED and not counted))
+
+
 def sync_payment(provider, payment: OrderPayment, source: str, wait: float = 0) -> str | None:
     """Read the payment's invoice from BTCPay and apply it."""
     invoice_id = payment.info_data.get("invoice_id")
     if not invoice_id or is_surplus(payment):
+        return None
+    if created_elsewhere(provider, payment):
+        # Asking the configured store would answer 404, and money paid on the old invoice would go unnoticed. The
+        # settings refuse a switch while invoices are open; this catches one created while the switch was saved.
+        _note(payment, state.NOTE_OTHER_STORE, {"id": invoice_id, "status": payment.info_data.get("status")})
+        _update_info(payment, checked=int(time.time()))
         return None
     # The order lock first: a busy order costs no request to BTCPay, so busy ones cannot eat the poll's time.
     with order_lock(payment.order_id, wait=wait):

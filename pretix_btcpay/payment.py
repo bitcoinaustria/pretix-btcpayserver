@@ -26,7 +26,7 @@ from pretix.multidomain.urlreverse import eventreverse, eventreverse_absolute
 from . import state
 from .api import BTCPayAPI, BTCPayError, WEBHOOK_EVENTS, is_own_link, missing_permissions
 from .locks import WEBHOOK, advisory_lock
-from .sync import PROVIDER, OrderBusy, event_ref, is_surplus, sync_payment
+from .sync import PROVIDER, OrderBusy, event_ref, invoice_origin, is_surplus, still_open, sync_payment
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +222,17 @@ class BTCPayServer(BasePaymentProvider):
         local = parsed.hostname in ("localhost", "127.0.0.1", "::1") or (parsed.hostname or "").endswith(".localhost")
         if parsed.scheme != "https" and not local:
             raise ValidationError(_("The BTCPay Server URL has to use https."))
+        moved = invoice_origin(self) != {"server": str(url).rstrip("/"), "store_id": str(store_id)}
+        if moved and self.settings.store_id:
+            # Invoices are read from the configured store only: after a switch, money on an open invoice of the old
+            # one would never be booked, and its seats would be sold again.
+            at = now()
+            open_ = sum(1 for p in OrderPayment.objects.filter(order__event=self.event, provider=self.identifier)
+                        .exclude(info__isnull=True).exclude(info="") if still_open(p, at))
+            if open_:
+                raise ValidationError(_("{count} BTCPay invoices of this event can still be paid or are not booked "
+                                        "yet. Change the server or store only after they have run out or are "
+                                        "booked.").format(count=open_))
         client = BTCPayAPI(url=url, api_key=str(key))
         try:
             info = client.current_key()
@@ -342,7 +353,8 @@ class BTCPayServer(BasePaymentProvider):
                     # Rolled back with the transaction; an invoice BTCPay did create runs out unpaid.
                     raise BTCPayError("Unexpected invoice from payment provider.")
                 info.update({"invoice_id": invoice["id"], "checkout_link": invoice["checkoutLink"],
-                             "status": invoice.get("status"), "expires": invoice.get("expirationTime")})
+                             "status": invoice.get("status"), "expires": invoice.get("expirationTime"),
+                             **invoice_origin(self)})
                 locked.info_data = info
                 locked.save(update_fields=["info"])
             payment.refresh_from_db()
