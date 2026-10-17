@@ -16,6 +16,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
+from urllib.parse import urlparse
 
 from django.db import DatabaseError, transaction
 from django.db.models import Q, Sum
@@ -29,6 +30,7 @@ from pretix.helpers.database import OF_SELF
 
 from . import state
 from .api import BTCPayError
+from .checks import _effective_port
 from .locks import ORDER, advisory_lock
 
 logger = logging.getLogger(__name__)
@@ -462,11 +464,21 @@ def invoice_origin(provider) -> dict:
     return {"server": str(provider.settings.url or "").rstrip("/"), "store_id": str(provider.settings.store_id or "")}
 
 
+def same_origin(a: dict, b: dict) -> bool:
+    """Same store on the same server; ``HTTPS://Pay.example.org:443/`` and ``https://pay.example.org`` are one."""
+    def server(url):
+        parsed = urlparse(str(url or "").strip())
+        return parsed.scheme.lower(), (parsed.hostname or "").lower(), _effective_port(parsed), parsed.path.rstrip("/")
+    return str(a.get("store_id")) == str(b.get("store_id")) and server(a.get("server")) == server(b.get("server"))
+
+
 def created_elsewhere(provider, payment: OrderPayment) -> bool:
     """Whether the payment's invoice was created in another store or on another server than the configured one."""
-    info, current = payment.info_data, invoice_origin(provider)
+    info = payment.info_data
     # Invoices from before the origin was stored have none; they can only come from the configured store.
-    return any(info.get(k) not in (None, current[k]) for k in current)
+    if info.get("store_id") is None and info.get("server") is None:
+        return False
+    return not same_origin(info, invoice_origin(provider))
 
 
 def still_open(payment: OrderPayment, at: datetime) -> bool:

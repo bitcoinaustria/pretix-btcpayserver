@@ -87,7 +87,8 @@ class SurfaceChecks(unittest.TestCase):
         self.client.update_webhook.assert_called_once()
 
     def test_connection_change_before_first_invoice_is_allowed(self):
-        with patch.object(self.provider, 'ensure_webhook') as ensure:
+        # The shared check event can hold open invoices of other checks; this one is about an event without any.
+        with patch.object(self.provider, 'ensure_webhook') as ensure, patch('pretix_btcpay.payment.still_open', return_value=False):
             self.clean(url='https://new.example.org')
         ensure.assert_called_once()
 
