@@ -1,6 +1,6 @@
 # Operating the Greenfield payment provider
 
-This guide applies to this fork with pretix 2026.7 and BTCPay Server 2.3.9. Test a new pretix or BTCPay release on a
+This guide applies to this plugin with pretix 2026.7 and BTCPay Server 2.3.9. Test a new pretix or BTCPay release on a
 separate test-mode event before upgrading production. [README](../README.md) covers installation and API permissions.
 
 ## Store settings
@@ -133,13 +133,13 @@ avoid clearing/evicting these guards during unresolved refunds. A database backu
 
 ## Upgrades
 
-Pin the exact plugin commit or artifact; this fork currently uses version `0.2.0` across its hardening commits, so
+Pin the exact plugin commit or artifact; the plugin currently uses version `0.2.0` across its hardening commits, so
 the version alone does not identify the deployed behavior. Back up the database, BTCPay data and the persistent refund
 cache before upgrading. Test the chosen artifact, rebuild assets, and restart every web and worker process, including
 any separate cron runtime. Save each event's payment settings, then verify webhook delivery and fallback polling.
 Follow the [pretix plugin deployment procedure](https://docs.pretix.eu/self-hosting/installation/manual_smallscale/#install-a-plugin).
 
-This is not an automatic migration from upstream, `pretix-bitpay`, or an older fork that stored multiple invoices on
+This is not an automatic migration from the original plugin, `pretix-bitpay`, or an earlier development version that stored multiple invoices on
 one payment. There is no data migration for those records; only `btcpay_greenfield` payments with the current
 `invoice_id` and matching Greenfield metadata are reconciled. Inventory unresolved old invoices, payments, reservations
 and refunds before switching. Keep a way to reconcile/refund every old invoice, or write and test a dedicated migration.

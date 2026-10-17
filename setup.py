@@ -11,8 +11,7 @@ Accept Bitcoin Lightning and on-chain Bitcoin payments in [pretix](https://preti
 The customer pays on the BTCPay checkout page hosted by your BTCPay Server instance. A signed store webhook and a periodic poll keep pretix in sync with the invoice state, which is always read back from the API.
 """,
     long_description_content_type="text/markdown",
-    author="Nathan Day",
-    author_email="nathan@day.ag",
+    author="Bitcoin Austria",
     url="https://github.com/bitcoinaustria/pretix-btcpayserver",
     license="MIT",
     install_requires=["django>=4", "django-i18nfield>=1.4", "requests>=2"],
