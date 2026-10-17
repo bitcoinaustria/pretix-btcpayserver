@@ -97,7 +97,7 @@ class SurfaceChecks(unittest.TestCase):
         self.client.current_key.assert_called_once()
 
     def test_signed_deep_json_is_bad_request(self):
-        body = b'[' * 1200 + b'0' + b']' * 1200
+        body = b'[' * 20000 + b'0' + b']' * 20000
         with patch.object(views, '_provider', return_value=self.provider):
             response = views.webhook(self.signed_request(body))
         self.assertEqual(response.status_code, 400)
@@ -160,6 +160,14 @@ class SurfaceChecks(unittest.TestCase):
             call = session.return_value.request.call_args
             self.assertIs(call.kwargs['allow_redirects'], False)
             self.assertEqual(call.kwargs['timeout'], (5, 15))
+
+    def test_api_wraps_json_recursion_errors(self):
+        response = Mock(status_code=200, content=b'not-empty')
+        response.json.side_effect = RecursionError('nested JSON')
+        with patch.object(api, '_session') as session:
+            session.return_value.request.return_value = response
+            with self.assertRaises(BTCPayError):
+                BTCPayAPI('https://pay.example.org', 'test-key').current_key()
 
     def test_api_wraps_timeouts_and_unexpected_shapes(self):
         client = BTCPayAPI('https://pay.example.org', 'test-key')

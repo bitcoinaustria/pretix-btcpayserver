@@ -86,7 +86,7 @@ class BTCPayAPI:
             return None
         try:
             return response.json()
-        except ValueError as e:
+        except (ValueError, RecursionError) as e:
             raise BTCPayError("Unexpected response from payment provider.", status=response.status_code) from e
 
     def _object(self, method, path, **kwargs) -> dict[str, Any]:
