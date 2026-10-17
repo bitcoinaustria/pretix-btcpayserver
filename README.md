@@ -67,7 +67,7 @@ existing payment integration: older invoices are not migrated automatically.
 | BTCPay invoice | pretix payment | order |
 |---|---|---|
 | `New` (also partially paid) | created | pending until its payment deadline |
-| `Processing`: fully paid, not yet confirmed | pending | unpaid; hold target is `monitoringExpiration` + 1 hour (see caveat below) |
+| `Processing`: fully paid, not yet confirmed | pending | unpaid; held until `monitoringExpiration` + 1 hour |
 | `Settled` (also `PaidOver`, `Marked`) | confirmed, also after it failed or was cancelled; money beyond the amount becomes its own confirmed payment | paid (overpaid) if the current total is covered and quota permits |
 | `Expired` (also `PaidPartial`, `PaidLate`) | failed | back to its old payment deadline |
 | `Invalid` | failed; a confirmed payment is only flagged | back to its old payment deadline |
@@ -138,11 +138,6 @@ existing payment integration: older invoices are not migrated automatically.
 
 ## Known limitations
 
-The current reservation-extension check keeps an existing deadline when it is up to five minutes before the hold
-target. That can leave only 55 minutes after monitoring expires, instead of the required full hour. The regression
-`test_hold_cannot_end_four_minutes_before_monitoring_plus_one_hour` exposes this unresolved shortfall; correct it
-before relying on a strict one-hour recovery margin.
-
 - The control-panel invoice display caches successful API reads for 30 seconds, scoped by event, server, store and
   invoice. A cold cache or outage still performs a synchronous request (5-second connect and 15-second read timeouts);
   failures are not cached. Rendering these details never confirms a payment. Buyer status polling reads only pretix.
@@ -161,6 +156,13 @@ Accepted for the Bitcoin Zitadelle, and worth knowing before you rely on the plu
   data, or a crash right after a claim plus a lost cache could let a retry create a second, still unapproved, claim.
 - The poll's 45 seconds are a target for starting checks, not a hard limit: a check that has started finishes (two
   BTCPay requests at most, each with a 15 second read timeout).
+- A payment counts once BTCPay settles its invoice. If a block reorganization then drops the confirming transaction
+  and a conflicting one confirms instead, BTCPay keeps reporting the invoice as `Settled`, and the order stays paid
+  without a note. With one confirmation (`MediumSpeed`) that takes a reorg plus a double spend; ask for 2 or 6
+  confirmations where that risk matters more than the wait.
+- The BTCPay server or store can only be changed while no invoice of the event can still be paid or is not booked
+  yet: invoices are read from the configured store only. Each invoice remembers where it was created; one created
+  while a change was being saved is noted on its order for a manual check instead of being asked for in the new store.
 - Only the current invoice of each payment is reconciled. Payments from upstream or from earlier commits of this fork
   that kept several invoices per payment would need a migration first; the Bitcoin Zitadelle starts on a fresh install.
 

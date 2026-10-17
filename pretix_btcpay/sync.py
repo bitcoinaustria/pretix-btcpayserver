@@ -167,10 +167,14 @@ def _hold_order(payment: OrderPayment, invoice: dict) -> None:
     # extend_order trusts the supplied status. A stale expired snapshot could reopen an order just paid or
     # canceled in the backend; keep the row locked from the status check through the extension.
     with _order_rows(payment.order_id) as (order, payments):
-        until = state.hold_until(_timestamp(invoice.get("monitoringExpiration")), now(), DEFAULT_MONITORING)
+        monitoring = _timestamp(invoice.get("monitoringExpiration"))
+        until = state.hold_until(monitoring, now(), DEFAULT_MONITORING)
         if order.status not in (Order.STATUS_PENDING, Order.STATUS_EXPIRED):
             return
-        if order.status == Order.STATUS_PENDING and order.expires >= until - timedelta(minutes=5):
+        # The full hour after BTCPay's monitoring ends, to the second. Only without it does the target move with the
+        # clock; there five minutes of slack spare an extension on every call.
+        slack = timedelta(0) if monitoring else timedelta(minutes=5)
+        if order.status == Order.STATUS_PENDING and order.expires >= until - slack:
             return
         if "held_from" not in payment.info_data:
             # The deadline before the first extension, to give the seats back if the payment fails.
