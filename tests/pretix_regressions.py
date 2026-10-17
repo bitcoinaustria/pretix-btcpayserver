@@ -14,11 +14,12 @@ from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, PropertyMock, patch
 
 from django.db import DatabaseError, connection, connections, transaction
 from django.test import RequestFactory
 from django.utils.timezone import now
+from django.utils.translation import override
 from django_scopes import scope, scopes_disabled
 from pretix.base.models import Event, Order, OrderFee, OrderPayment, OrderRefund
 from pretix.base.services.orders import change_payment_provider
@@ -36,6 +37,7 @@ if not EVENT_OBJECT.testmode or connection.vendor != "postgresql":
 class PaymentRegressions(unittest.TestCase):
     def setUp(self):
         self.enterContext(scope(organizer=EVENT_OBJECT.organizer))
+        self.enterContext(override("en"))
         self.enterContext(patch("pretix.base.services.invoices.invoice_qualified", return_value=False))
         self.enterContext(patch.object(Order, "send_mail", return_value=None))
         self.enterContext(patch.object(OrderPayment, "_send_paid_mail", return_value=None))
@@ -92,6 +94,220 @@ class PaymentRegressions(unittest.TestCase):
             cursor.execute("SET statement_timeout = '5s'")
         return other
 
+    def test_api_reuses_connections_within_a_thread_without_sharing_sessions(self):
+        from pretix_btcpay import api
+        sessions, errors = [], []
+
+        def make_session():
+            session = Mock()
+            session.request.return_value = SimpleNamespace(status_code=200, content=b"{}", json=lambda: {})
+            sessions.append(session)
+            return session
+
+        def request_twice():
+            try:
+                for _ in range(2):
+                    self.assertEqual(api.BTCPayAPI("https://example.org", "test-key").get_invoice("STORE", "INVOICE"), {})
+            except Exception as error:
+                errors.append(error)
+
+        with patch.object(api, "_sessions", threading.local(), create=True), \
+                patch.object(api.requests, "Session", side_effect=make_session), \
+                patch.object(api.requests, "request", side_effect=AssertionError("Connection reuse bypassed")):
+            request_twice()
+            workers = [threading.Thread(target=request_twice) for _ in range(2)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=2)
+            self.assertFalse(any(worker.is_alive() for worker in workers))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(sessions), 3)
+        self.assertTrue(all(session.request.call_count == 2 for session in sessions))
+
+    def test_api_does_not_follow_redirects_and_preserves_error_status(self):
+        from pretix_btcpay import api
+        session = Mock()
+        client = api.BTCPayAPI("https://example.org/", "test-key")
+        with patch.object(api, "_session", return_value=session):
+            session.request.return_value = SimpleNamespace(status_code=200, content=b"{}", json=lambda: {})
+            self.assertEqual(client.get_invoice("STORE", "INVOICE"), {})
+            self.assertEqual(session.request.call_args.kwargs["timeout"], (5, 15))
+            self.assertIs(session.request.call_args.kwargs["allow_redirects"], False)
+            for status in (302, 404, 503):
+                with self.subTest(status=status):
+                    session.request.return_value = SimpleNamespace(status_code=status, text="test response")
+                    with self.assertRaises(api.BTCPayError) as raised:
+                        client.get_invoice("STORE", "INVOICE")
+                    self.assertEqual(raised.exception.status, status)
+
+    def webhook_request(self, payment, **meta):
+        secret = "regression-webhook-secret"
+        body = json.dumps({"type": "InvoiceSettled", "invoiceId": payment.info_data["invoice_id"],
+                           "storeId": "REVIEW"}).encode()
+        request = RequestFactory().post("/webhook/", data=body, content_type="application/json",
+                                       HTTP_BTCPAY_SIG="sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest())
+        request.event = EVENT_OBJECT
+        request.META.update(meta)
+        self.provider.webhook_secrets = lambda: [secret]
+        return request
+
+    def test_unconfirmed_money_holds_until_monitoring_plus_one_hour_without_paying(self):
+        for initial in ("created", "pending", "canceled", "failed"):
+            with self.subTest(initial=initial):
+                order, payment = self.make_order(payment_state=initial)
+                invoice = self.invoice(payment, state.PROCESSING, monitoring_hours=3)
+                sync.apply(self.provider, payment, invoice, "regression")
+                order.refresh_from_db()
+                payment.refresh_from_db()
+                self.assertEqual(order.status, Order.STATUS_PENDING)
+                self.assertEqual(payment.state, "pending" if initial == "created" else initial)
+                self.assertAlmostEqual(order.expires.timestamp(), invoice["monitoringExpiration"] + 3600, delta=1)
+                self.assertEqual(sync._net_paid(order), Decimal("0"))
+                # pretix can explicitly permit unpaid tickets; exercise the required paid-only configuration.
+                with patch.object(Event, "settings", new_callable=PropertyMock, return_value=SimpleNamespace(
+                        ticket_download=True, ticket_download_date=None, ticket_download_pending=False)):
+                    self.assertFalse(order.ticket_download_available)
+                self.assertFalse(order.all_logentries().filter(action_type="pretix.event.order.payment.confirmed").exists())
+
+    def test_unsafe_or_malformed_speed_policy_cannot_change_payment_or_hold(self):
+        for checkout in (None, [], "MediumSpeed", 1, {}, {"speedPolicy": "HighSpeed"},
+                         {"speedPolicy": "Unknown"}, {"speedPolicy": None}):
+            with self.subTest(checkout=checkout):
+                order, payment = self.make_order()
+                expires = order.expires
+                invoice = self.invoice(payment, state.SETTLED)
+                invoice["checkout"] = checkout
+                with self.assertRaises(sync.InvoiceMismatch):
+                    sync.apply(self.provider, payment, invoice, "regression")
+                order.refresh_from_db()
+                payment.refresh_from_db()
+                self.assertEqual((order.status, payment.state, order.expires), (Order.STATUS_PENDING, "created", expires))
+                self.assertNotIn("status", payment.info_data)
+
+    def test_double_payment_note_rolls_back_with_confirmation_and_retries_once(self):
+        order, first = self.make_order(payment_state="confirmed", order_state=Order.STATUS_PAID)
+        second = self.add_payment(order, "created")
+        original_note = sync._note
+
+        def crash_after_note(payment, note, invoice, **kwargs):
+            original_note(payment, note, invoice, **kwargs)
+            if note == state.NOTE_PAID_TWICE:
+                raise RuntimeError("Worker dies before commit")
+
+        with patch.object(sync, "_note", crash_after_note):
+            with self.assertRaisesRegex(RuntimeError, "before commit"):
+                sync.apply(self.provider, second, self.invoice(second, state.SETTLED), "regression")
+        second.refresh_from_db()
+        self.assertEqual(second.state, "created")
+        self.assertFalse(order.all_logentries().filter(action_type="pretix_btcpay.double_payment").exists())
+        for _ in range(2):
+            sync.apply(self.provider, second, self.invoice(second, state.SETTLED), "regression")
+        second.refresh_from_db()
+        self.assertEqual(second.state, "confirmed")
+        self.assertEqual(sync._net_paid(order), Decimal("532.00"))
+        self.assertEqual(order.all_logentries().filter(action_type="pretix_btcpay.double_payment").count(), 1)
+        self.assertEqual(order.all_logentries().filter(action_type="pretix.event.order.payment.confirmed").count(), 1)
+
+    def test_webhook_rejects_bad_length_before_reading_or_fetching(self):
+        order, payment = self.make_order()
+        for length, expected in (("garbage", 400), (str(views.MAX_BODY + 1), 413)):
+            with self.subTest(length=length):
+                request = self.webhook_request(payment, CONTENT_LENGTH=length)
+                request._stream = Mock(read=Mock(side_effect=AssertionError("Body must not be read")))
+                self.provider.client.get_invoice = Mock(side_effect=AssertionError("Must not contact BTCPay"))
+                with patch.object(views, "_provider", return_value=self.provider):
+                    self.assertEqual(views.webhook(request).status_code, expected)
+        request = self.webhook_request(payment, CONTENT_LENGTH="0")
+        request._body = b"x" * (views.MAX_BODY + 1)
+        with patch.object(views, "_provider", return_value=self.provider):
+            self.assertEqual(views.webhook(request).status_code, 413)
+
+    def test_status_exposes_reopened_invoice_without_a_btcpay_request(self):
+        order, payment = self.make_order(payment_state="pending")
+        api_request = self.enterContext(patch("pretix_btcpay.api.BTCPayAPI._request",
+                                             side_effect=AssertionError("Status must only read the database")))
+        request = RequestFactory().get("/status/")
+        request.event = EVENT_OBJECT
+        kwargs = {"order": order.code, "secret": order.secret, "payment": payment.pk}
+        for status in (state.PROCESSING, state.NEW):
+            payment.info_data = {**payment.info_data, "status": status}
+            payment.save(update_fields=["info"])
+            response = views.status(request, **kwargs)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(json.loads(response.content), {"state": "pending", "paid": False, "invoice_status": status})
+            self.assertEqual(response["Cache-Control"], "no-store")
+        api_request.assert_not_called()
+        self.assertEqual(views.status(request, **{**kwargs, "secret": "wrong"}).status_code, 404)
+        other, other_payment = self.make_order()
+        self.assertEqual(views.status(request, **{**kwargs, "payment": other_payment.pk}).status_code, 404)
+
+    def test_rbf_underpayment_returns_existing_checkout_and_offers_completion(self):
+        order, payment = self.make_order(payment_state="pending")
+        invoice = self.invoice(payment, state.NEW, paid="133.00")
+        provider = BTCPayServer(EVENT_OBJECT)
+        provider.client = SimpleNamespace(url="https://example.org", get_invoice=Mock(return_value=invoice),
+                                          create_invoice=Mock(side_effect=AssertionError("Must reuse the invoice")))
+        request = RequestFactory().get("/")
+        with patch.object(provider, "settings", SimpleNamespace(store_id="REVIEW", webhook_id="W", webhook_secret="S")), \
+                patch.object(provider, "promote_webhook"), patch.object(provider, "_order_url", return_value="/order/"):
+            self.assertEqual(provider.execute_payment(request, payment), payment.info_data["checkout_link"])
+            rendered = provider.payment_pending_render(request, payment)
+        self.assertIn('href="' + payment.info_data["checkout_link"] + '"', rendered)
+        self.assertIn("Complete payment", rendered)
+        self.assertNotIn("waiting for confirmation by the Bitcoin network", rendered)
+        payment.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual((payment.state, order.status), ("pending", Order.STATUS_PENDING))
+        provider.client.create_invoice.assert_not_called()
+
+    def test_confirmed_surplus_format_change_does_not_restart_receipt_lookup(self):
+        order, payment = self.make_order(payment_state="confirmed", order_state=Order.STATUS_PAID)
+        OrderPayment.objects.filter(pk=payment.pk).update(created=now() - timedelta(days=10))
+        payment.refresh_from_db()
+        payment.info_data = {**payment.info_data, "status": state.SETTLED, "paid_amount": "399.00",
+                             "surplus_counted": "399.0", "surplus_recorded": "132.99", "checked": 1000,
+                             "monitoring_until": int((now() - timedelta(days=9)).timestamp())}
+        payment.save(update_fields=["info"])
+        self.provider.client.get_invoice_payment_methods = Mock(side_effect=AssertionError("Already counted this amount"))
+        self.assertIsNone(sync.next_check(payment, now()))
+        sync._record_surplus(self.provider, payment, self.invoice(payment, state.SETTLED, "399.00"))
+        self.provider.client.get_invoice_payment_methods.assert_not_called()
+        self.assertEqual(order.payments.count(), 1)
+
+    def test_control_cache_is_scoped_and_does_not_cache_errors(self):
+        order, payment = self.make_order()
+        provider = BTCPayServer(EVENT_OBJECT)
+        provider.client = SimpleNamespace(url="https://example.org", get_invoice=Mock(return_value={"status": state.NEW}))
+        settings = SimpleNamespace(store_id="REVIEW", url="https://example.org", api_key="test-key")
+        cached = {}
+        calls = []
+
+        def remember(key, value, timeout):
+            self.assertEqual(timeout, 30)
+            cached[key] = value
+
+        with patch.object(provider, "settings", settings), patch("pretix_btcpay.payment.cache.get", side_effect=cached.get), \
+                patch("pretix_btcpay.payment.cache.set", side_effect=remember):
+            for store, host in (("REVIEW", "https://example.org"), ("OTHER", "https://example.org"),
+                                ("OTHER", "https://second.example.org")):
+                settings.store_id, provider.client.url = store, host
+                for _ in range(2):
+                    provider.payment_control_render(None, payment)
+                calls.append(provider.client.get_invoice.call_count)
+            self.assertEqual(calls, [1, 2, 3])
+            with patch.object(provider, "event", SimpleNamespace(pk=EVENT_OBJECT.pk + 100000)):
+                provider.payment_control_render(None, payment)
+            self.assertEqual(provider.client.get_invoice.call_count, 4)
+            cached.clear()
+            from pretix_btcpay.api import BTCPayError
+            provider.client.get_invoice.side_effect = BTCPayError("outage")
+            self.assertIn("could not be reached", provider.payment_control_render(None, payment))
+            self.assertFalse(cached)
+            provider.client.get_invoice.side_effect = None
+            provider.payment_control_render(None, payment)
+            self.assertEqual(provider.client.get_invoice.call_count, 6)
+
     def test_order_row_contention_returns_retryable_webhook_response(self):
         order, payment = self.make_order()
         other = self.other_connection()
@@ -110,6 +326,14 @@ class PaymentRegressions(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         payment.refresh_from_db()
         self.assertEqual(payment.state, "created")
+        other.rollback()
+        with patch.object(views, "_provider", return_value=self.provider):
+            self.assertEqual(views.webhook(request).status_code, 200)
+            self.assertEqual(views.webhook(request).status_code, 200)
+        order.refresh_from_db()
+        payment.refresh_from_db()
+        self.assertEqual((order.status, payment.state), (Order.STATUS_PAID, "confirmed"))
+        self.assertEqual(order.all_logentries().filter(action_type="pretix.event.order.payment.confirmed").count(), 1)
 
     def test_payment_row_contention_releases_order_lock_on_every_finalization_path(self):
         for path in ("confirm", "catch_up", "surplus"):
