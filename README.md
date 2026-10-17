@@ -160,12 +160,12 @@ Accepted for the Bitcoin Zitadelle, and worth knowing before you rely on the plu
   and a conflicting one confirms instead, BTCPay keeps reporting the invoice as `Settled`, and the order stays paid
   without a note. With one confirmation (`MediumSpeed`) that takes a reorg plus a double spend; ask for 2 or 6
   confirmations where that risk matters more than the wait.
-- The settings form blocks a BTCPay server or store change while an event payment is created/pending, its invoice is
-  non-final, or a settled invoice's base payment is not booked yet. Equivalent server addresses and same-store key
-  rotation are allowed. Each invoice remembers where it was created; an invoice from another server/store is noted
-  once and skipped without asking the new store. This also catches invoices created while settings were saved.
-  Current caveat: the guard does not check an unbooked surplus on an already confirmed payment (`surplus_open`).
-  Keep the original server/store configured until those funds are booked too; see [store changes](docs/operations.md#changing-the-server-or-store).
+- The settings form blocks a BTCPay server or store change while any payment of the event still needs its invoice
+  (open, not booked, extra money not booked, order not finalized), also with the payment method disabled. A change
+  and invoice creation are serialized, so no invoice is created with the old connection after the check. Equivalent
+  server addresses and same-store key rotation are allowed. Each invoice remembers where it was created; one from
+  another server/store is noted once and skipped without asking the new store; see
+  [store changes](docs/operations.md#changing-the-server-or-store).
 - Only the current invoice of each payment is reconciled. Payments from upstream or from earlier commits of this fork
   that kept several invoices per payment would need a migration first; the Bitcoin Zitadelle starts on a fresh install.
 

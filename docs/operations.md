@@ -63,20 +63,23 @@ store credentials while invoices still need reconciliation without an explicit m
 
 ## Changing the server or store
 
-The payment settings form refuses a different server or store while an event has created/pending payments with an
-invoice, a non-final invoice, or a settled invoice whose base payment has not been booked. Expired invoices remain
-open while their monitoring deadline is in the future. A settled or invalid invoice is treated as final; a settled
-and confirmed/refunded base payment alone does not block the change. Rotating the API key on the same server/store
-is allowed. Scheme/host case, default ports and trailing slashes do not make an equivalent address a new server.
+The payment settings form refuses a different server or store while any payment of the event still needs its
+invoice: a created/pending payment with an invoice, a non-final invoice (expired invoices stay open until their
+monitoring deadline), a settled invoice whose base payment is not booked, a confirmed payment whose order is not
+marked paid yet, or a confirmed payment with extra money not booked yet (`surplus_open`, or more paid than booked).
+This holds when the payment method is disabled too, and when URL or store is cleared. Rotating the API key on the
+same server/store is allowed. Scheme/host case, default ports and trailing slashes do not make an equivalent address
+a new server.
 
-Current caveat: a confirmed payment can still have unbooked extra money (`surplus_open`), for example while a second
-transfer awaits confirmation or the payment-method API is unavailable. The guard currently permits a switch in that
-state. Check for unresolved surplus as well as open base payments, and keep the original server/store configured
-until all received money is booked. New transfers to old settled invoices after a switch also require manual review.
+A change and invoice creation are serialized per event: a checkout holds the event's connection lock (shared) until
+its invoice is stored, a change holds it exclusively until pretix commits the settings. A change therefore sees every
+invoice created with the old connection; a checkout waiting for a change refuses to create an invoice with the
+replaced settings and asks the buyer to try again (`tests/pretix_settings_race.py`).
 
-New invoices remember their server and store. Reconciliation skips a payment from another origin without contacting
-the new store, updates its check timestamp and logs `other_store` once for manual recovery. This includes an invoice
-created while a settings change was being saved; the guard does not serialize invoice creation with settings saves.
+New invoices remember their server and store. Should a payment from another origin still turn up (for example one
+created by an older plugin version, or settings edited directly in the database), reconciliation skips it without
+contacting the new store, updates its check timestamp and logs `other_store` once for manual recovery. Money paid
+to an old invoice after a switch is not seen by pretix.
 Do not assume that changing settings migrates old invoices or keeps reconciling them with the old credentials.
 
 ## Reorganizations after settlement
