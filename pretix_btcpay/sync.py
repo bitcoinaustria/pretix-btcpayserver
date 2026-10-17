@@ -121,7 +121,8 @@ def check_invoice(payment: OrderPayment, invoice: dict, store_id: str) -> None:
         raise InvoiceMismatch("invoice belongs to another event")
     if _decimal(invoice.get("amount")) != payment.amount or invoice.get("currency") != payment.order.event.currency:
         raise InvoiceMismatch("invoice amount or currency differs from the payment")
-    if (invoice.get("checkout") or {}).get("speedPolicy") not in state.SPEED_POLICIES:
+    checkout = invoice.get("checkout")
+    if not isinstance(checkout, dict) or checkout.get("speedPolicy") not in state.SPEED_POLICIES:
         # We only create invoices that settle after at least one confirmation, and BTCPay always reports the policy.
         # One that settles on an unconfirmed transaction (HighSpeed), or does not say, must not mark anything paid.
         raise InvoiceMismatch("invoice settles without a confirmation")
@@ -420,8 +421,10 @@ def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
         # since letting it out would roll the payment confirmation back with it: the payment counts even
         # when the seats are gone.
         with _order_rows(payment.order_id) as (order, payments):
-            # Already paid, and still covered after refunds: this money comes on top. Read under the row lock.
-            paid_before = order.status == Order.STATUS_PAID and _net_paid(order) >= order.total
+            # Already paid, and still covered after refunds: this money comes on top. Read under the row lock, and
+            # only if this payment is not confirmed yet: someone in the backend may have confirmed it meanwhile.
+            paid_before = (payments[payment.pk].state != OrderPayment.PAYMENT_STATE_CONFIRMED
+                           and order.status == Order.STATUS_PAID and _net_paid(order) >= order.total)
             try:
                 payment.confirm()
             except Quota.QuotaExceededException as e:

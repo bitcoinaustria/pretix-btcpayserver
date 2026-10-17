@@ -91,7 +91,8 @@ with scope(organizer=event.organizer):
                        ("Zahlung", {"metadata": {"orderId": order.code, "pretixPaymentId": payment.pk + 999, "pretixEvent": f"{ORGANIZER}/{EVENT}"}}),
                        ("Rechnung", {"id": "FREMD"}),
                        ("ohne Bestätigung (HighSpeed)", {"checkout": {"speedPolicy": "HighSpeed"}}),
-                       ("ohne Angabe der Bestätigungen", {"checkout": {}})):
+                       ("ohne Angabe der Bestätigungen", {"checkout": {}}),
+                       ("Checkout kein Objekt", {"checkout": "MediumSpeed"})):
         try:
             sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, **bad), "check")
             reload(order, payment)
@@ -152,6 +153,23 @@ with scope(organizer=event.organizer):
     reload(order, second)
     twice = order.all_logentries().filter(action_type="pretix_btcpay.double_payment").count()
     check(second.state == "confirmed" and twice == 0, f"erste Zahlung schon erstattet: kein Hinweis auf Erstattung ({twice})")
+    order, payment, inv = order_with_payment()
+    original_decide = state.decide
+
+    def decide_then_confirmed_in_backend(*args, **kwargs):  # zwischen Entscheidung und Sperre
+        decision = original_decide(*args, **kwargs)
+        OrderPayment.objects.get(pk=payment.pk).confirm()
+        return decision
+
+    state.decide = decide_then_confirmed_in_backend
+    try:
+        sync.apply(provider, payment, invoice(payment, inv, state.SETTLED), "check")
+    finally:
+        state.decide = original_decide
+    reload(order, payment)
+    twice = order.all_logentries().filter(action_type="pretix_btcpay.double_payment").count()
+    check(payment.state == "confirmed" and order.status == "p" and twice == 0,
+          f"dieselbe Zahlung inzwischen bestätigt: kein Hinweis auf Erstattung ({twice})")
 
     print("Überzahlt, zweimal gemeldet, dann noch mehr")
     order, payment, inv = order_with_payment()
