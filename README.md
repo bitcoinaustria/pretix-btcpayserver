@@ -160,9 +160,12 @@ Accepted for the Bitcoin Zitadelle, and worth knowing before you rely on the plu
   and a conflicting one confirms instead, BTCPay keeps reporting the invoice as `Settled`, and the order stays paid
   without a note. With one confirmation (`MediumSpeed`) that takes a reorg plus a double spend; ask for 2 or 6
   confirmations where that risk matters more than the wait.
-- The BTCPay server or store can only be changed while no invoice of the event can still be paid or is not booked
-  yet: invoices are read from the configured store only. Each invoice remembers where it was created; one created
-  while a change was being saved is noted on its order for a manual check instead of being asked for in the new store.
+- The settings form blocks a BTCPay server or store change while an event payment is created/pending, its invoice is
+  non-final, or a settled invoice's base payment is not booked yet. Equivalent server addresses and same-store key
+  rotation are allowed. Each invoice remembers where it was created; an invoice from another server/store is noted
+  once and skipped without asking the new store. This also catches invoices created while settings were saved.
+  Current caveat: the guard does not check an unbooked surplus on an already confirmed payment (`surplus_open`).
+  Keep the original server/store configured until those funds are booked too; see [store changes](docs/operations.md#changing-the-server-or-store).
 - Only the current invoice of each payment is reconciled. Payments from upstream or from earlier commits of this fork
   that kept several invoices per payment would need a migration first; the Bitcoin Zitadelle starts on a fresh install.
 
@@ -184,14 +187,18 @@ Accepted for the Bitcoin Zitadelle, and worth knowing before you rely on the plu
 python -m unittest discover -s tests -t .                  # the state machine and the security checks, without pretix
 docker exec -i <pretix container> pretix shell < tests/pretix_checks.py   # sync against a real pretix, fake invoices
 docker exec -i -e CHECK_EVENT=<organizer>/<test-event> <pretix container> pretix shell < tests/pretix_regressions.py
+docker exec -i -e CHECK_EVENT=<organizer>/<test-event> <pretix container> pretix shell < tests/pretix_surface.py
 ```
 
-Both live scripts require a test-mode event and PostgreSQL. Run `pretix_checks.py` only on a dedicated disposable
+All three live scripts require a test-mode event and PostgreSQL. Run `pretix_checks.py` only on a dedicated disposable
 instance: it creates more than 500 orders, exercises settings writes (restored afterwards), and mocks the global poll.
 The regression checks use fake invoices, create temporary test orders and delete them afterwards, without changing
 payment settings or contacting BTCPay. They cover concurrent
 payment-method switching, row contention, balance protection, quota failures, surplus accounting and reservation
 cleanup when several invoices are in flight.
+The surface checks use fake API responses and roll back temporary settings and orders. They cover webhook setup,
+input validation, authenticated status reads, cached display and the server/store change guard. The surplus regression
+currently fails because that guard permits a switch before an already confirmed invoice's extra money is booked.
 
 End-to-end tests on regtest (on-chain, Lightning, expiry, partial, over and late payments, double spends,
 switched payment methods, lost webhooks, forged webhooks, refunds, a rush of buyers) live in the Bitcoin Zitadelle

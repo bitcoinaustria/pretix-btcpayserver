@@ -61,6 +61,31 @@ Turning off the payment method prevents new sales through it, but the poll keeps
 the plugin is enabled and its URL, store and key remain configured. Do not disable/uninstall the plugin or replace its
 store credentials while invoices still need reconciliation without an explicit migration and recovery plan.
 
+## Changing the server or store
+
+The payment settings form refuses a different server or store while an event has created/pending payments with an
+invoice, a non-final invoice, or a settled invoice whose base payment has not been booked. Expired invoices remain
+open while their monitoring deadline is in the future. A settled or invalid invoice is treated as final; a settled
+and confirmed/refunded base payment alone does not block the change. Rotating the API key on the same server/store
+is allowed. Scheme/host case, default ports and trailing slashes do not make an equivalent address a new server.
+
+Current caveat: a confirmed payment can still have unbooked extra money (`surplus_open`), for example while a second
+transfer awaits confirmation or the payment-method API is unavailable. The guard currently permits a switch in that
+state. Check for unresolved surplus as well as open base payments, and keep the original server/store configured
+until all received money is booked. New transfers to old settled invoices after a switch also require manual review.
+
+New invoices remember their server and store. Reconciliation skips a payment from another origin without contacting
+the new store, updates its check timestamp and logs `other_store` once for manual recovery. This includes an invoice
+created while a settings change was being saved; the guard does not serialize invoice creation with settings saves.
+Do not assume that changing settings migrates old invoices or keeps reconciling them with the old credentials.
+
+## Reorganizations after settlement
+
+BTCPay 2.3.9 can keep an invoice and its payment marked settled after a reorganization removes the confirming
+transaction and a conflicting transaction confirms instead. The plugin's Greenfield reads cannot detect that loss:
+pretix keeps the order paid without an attention note. This accepted limitation also applies while polling works.
+Use two or six confirmations where that risk warrants the extra wait; neither removes reorganization risk entirely.
+
 ## Orders needing attention
 
 Review the order's payment details and history alongside the BTCPay invoice and transactions:
