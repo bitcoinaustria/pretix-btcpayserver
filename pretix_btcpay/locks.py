@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 ORDER = 0x42545001  # "BTP" and a kind, as the first number of the key
 WEBHOOK = 0x42545002
+CONNECTION = 0x42545003
 
 
 class Busy(Exception):
@@ -85,3 +86,26 @@ def advisory_lock(space: int, key: int, wait: float = 0, busy: type[Exception] =
                 # lock behind on a connection that pretix keeps open for the next request.
                 logger.warning("BTCPay: could not release lock %s, closing the connection", ident, exc_info=True)
                 connection.close()
+
+
+def hold_connection(event_pk: int, shared: bool, wait: float, busy: type[Exception] = Busy) -> None:
+    """
+    Hold the event's BTCPay connection until the surrounding transaction ends: shared while an invoice is created
+    with it, exclusively while a change of server or store is checked and saved. A change then sees every invoice
+    created with the old connection, and no invoice is created with a connection that is being replaced.
+
+    Outside a transaction there is nothing to hold it for (a check run by hand, not the settings view), so this does
+    nothing. Tried, never waited for inside PostgreSQL, like ``advisory_lock``.
+    """
+    if connection.vendor != "postgresql" or not connection.in_atomic_block:
+        return
+    function = "pg_try_advisory_xact_lock_shared" if shared else "pg_try_advisory_xact_lock"
+    until = time.monotonic() + wait
+    with connection.cursor() as cursor:
+        while True:
+            cursor.execute(f"SELECT {function}(%s, %s)", [CONNECTION, int(event_pk) % 2 ** 31])
+            if cursor.fetchone()[0]:
+                return
+            if time.monotonic() >= until:
+                raise busy()
+            time.sleep(0.2)

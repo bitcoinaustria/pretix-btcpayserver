@@ -284,3 +284,12 @@ msgstr "Die Rechnung dieser Zahlung wurde in einem anderen BTCPay-Store oder auf
 
 msgid "{count} BTCPay invoices of this event can still be paid or are not booked yet. Change the server or store only after they have run out or are booked."
 msgstr "{count} BTCPay-Rechnungen dieses Events können noch bezahlt werden oder sind noch nicht verbucht. Server oder Store erst wechseln, wenn sie abgelaufen oder verbucht sind."
+
+msgid "Payments are being started right now. Please save again in a minute."
+msgstr "Gerade werden Zahlungen gestartet. Bitte in einer Minute noch einmal speichern."
+
+msgid "The payment settings are being changed. Please try again in a minute."
+msgstr "Die Zahlungseinstellungen werden gerade geändert. Bitte versuche es in einer Minute noch einmal."
+
+msgid "The payment settings were just changed. Please try again."
+msgstr "Die Zahlungseinstellungen wurden gerade geändert. Bitte versuche es noch einmal."
