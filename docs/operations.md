@@ -28,8 +28,10 @@ Leave pretix's **Generate tickets for pending orders** (`ticket_download_pending
 only after payment, and do not mark an unpaid order valid (`valid_if_pending`). The plugin controls the payment and
 order states; pretix can separately authorize ticket downloads for unpaid orders.
 While an invoice is `Processing`, pretix's payment is pending, its order is unpaid, and no paid ticket is released.
-The plugin extends the reservation to `monitoringExpiration` plus one hour for delivery and polling. If that timestamp
+The reservation target is `monitoringExpiration` plus one hour for delivery and polling. If that timestamp
 is absent or already past, it uses 24 hours from the check plus one hour. An existing later reservation is preserved.
+Current caveat: `_hold_order` also skips extension when the existing deadline is up to five minutes earlier than the
+target. This does not meet the strict one-hour margin; the new hold-deadline regression fails until it is corrected.
 When BTCPay drops the payment (`Invalid` or `Expired`), the plugin restores the original deadline with at least ten
 minutes to retry, once all payments needing the hold have finished. Merely reaching invoice expiration does not
 release a `Processing` payment's seats. If the seats were already sold before an expired order could be extended or
