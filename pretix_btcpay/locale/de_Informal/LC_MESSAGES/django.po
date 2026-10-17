@@ -177,6 +177,9 @@ msgstr "BTCPay hat nur einen Teil des Betrags erhalten. Das Erhaltene muss aus B
 msgid "BTCPay received more than the amount. The difference has to be returned."
 msgstr "BTCPay hat mehr als den Betrag erhalten. Die Differenz muss zurückgezahlt werden."
 
+msgid "This order was already paid when BTCPay settled another of its invoices. Both payments count; return one of them to the buyer."
+msgstr "Die Bestellung war schon bezahlt, als BTCPay eine weitere ihrer Rechnungen als bezahlt gemeldet hat. Beide Zahlungen zählen; eine davon muss an den Käufer zurück."
+
 msgid "BTCPay received the payment after the invoice expired. Check in BTCPay; marking the invoice as settled there confirms the payment."
 msgstr "BTCPay hat die Zahlung erst nach Ablauf der Rechnung erhalten. Bitte in BTCPay prüfen; wird die Rechnung dort als bezahlt markiert, gilt die Zahlung als bestätigt."
 

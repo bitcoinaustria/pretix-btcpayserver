@@ -44,7 +44,14 @@ def is_own_link(base_url: str, link: str) -> bool:
     the same instance as ``https://btcpay.example.com``.
     """
     try:
+        # Browsers read a backslash as a slash and drop whitespace and control characters, Python does not:
+        # ``https://evil.example\@pay.example.org/`` is pay.example.org to urlparse and evil.example in a browser.
+        # Our instance's links never contain any of these, nor credentials, so refuse instead of normalizing.
+        if not isinstance(link, str) or "\\" in link or any(ord(c) <= 0x20 or ord(c) == 0x7F for c in link):
+            return False
         base, target = urlparse(base_url), urlparse(link)
+        if "@" in target.netloc:
+            return False
         if base.scheme not in ("https", "http") or target.scheme != base.scheme:
             return False
         if not base.hostname or not target.hostname:

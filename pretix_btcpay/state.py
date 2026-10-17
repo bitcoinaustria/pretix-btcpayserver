@@ -40,6 +40,8 @@ NOTE_MARKED = "marked"
 NOTE_INVALID_AFTER_CONFIRM = "invalid_after_confirm"
 NOTE_SETTLED_AFTER_REFUND = "settled_after_refund"
 NOTE_MONEY_ON_CLOSED = "money_on_closed_invoice"
+# A second payment settled for an order that was already paid: the whole amount is to be refunded.
+NOTE_PAID_TWICE = "double_payment"
 
 
 @dataclass(frozen=True)

@@ -89,7 +89,8 @@ with scope(organizer=event.organizer):
     for label, bad in (("Betrag", {"amount": "26.60"}), ("Währung", {"currency": "USD"}), ("Laden", {"storeId": "fremd"}),
                        ("Event", {"metadata": {"orderId": order.code, "pretixPaymentId": payment.pk, "pretixEvent": "x/y"}}),
                        ("Zahlung", {"metadata": {"orderId": order.code, "pretixPaymentId": payment.pk + 999, "pretixEvent": f"{ORGANIZER}/{EVENT}"}}),
-                       ("Rechnung", {"id": "FREMD"})):
+                       ("Rechnung", {"id": "FREMD"}),
+                       ("ohne Bestätigung (HighSpeed)", {"checkout": {"speedPolicy": "HighSpeed"}})):
         try:
             sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, **bad), "check")
             reload(order, payment)
@@ -332,6 +333,7 @@ with scope(organizer=event.organizer):
     outcomes = {}
     for label, behaviour in (("keine Antwort", _Err("timeout")), ("Serverfehler", _Err("boom", status=502)),
                              ("fremder Link", {"id": "PP1", "viewLink": "https://evil.example/pp"}),
+                             ("Link mit Backslash", {"id": "PP1", "viewLink": "https://evil.example\\@" + provider.client.url.split("://", 1)[1].split("/")[0] + "/pp"}),
                              ("abgelehnt", _Err("bad", status=400))):
         def fake_refund(self, *a, _b=behaviour, **kw):
             if isinstance(_b, Exception):
@@ -340,7 +342,7 @@ with scope(organizer=event.organizer):
         BTCPayAPI.refund_invoice = fake_refund
         order, payment, inv = paid_order()
         outcomes[label] = run_refund(new_refund(order, payment))[:2]
-    check(all(outcomes[k] == ("transit", True) for k in ("keine Antwort", "Serverfehler", "fremder Link")),
+    check(all(outcomes[k] == ("transit", True) for k in ("keine Antwort", "Serverfehler", "fremder Link", "Link mit Backslash")),
           f"ohne klare Antwort: in Arbeit, für einen Menschen markiert ({outcomes})")
     check(outcomes["abgelehnt"] == ("abgelehnt", False), "von BTCPay abgelehnt: sauber gescheitert, nichts angelegt")
 

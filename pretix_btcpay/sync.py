@@ -22,6 +22,7 @@ from django.db.models import Q, Sum
 from django.utils.timezone import now
 
 from pretix.base.models import Order, OrderPayment, OrderRefund, Quota
+from pretix.base.payment import PaymentException
 from pretix.base.services.locking import LockTimeoutException
 from pretix.base.services.orders import OrderError, extend_order
 from pretix.helpers.database import OF_SELF
@@ -120,6 +121,11 @@ def check_invoice(payment: OrderPayment, invoice: dict, store_id: str) -> None:
         raise InvoiceMismatch("invoice belongs to another event")
     if _decimal(invoice.get("amount")) != payment.amount or invoice.get("currency") != payment.order.event.currency:
         raise InvoiceMismatch("invoice amount or currency differs from the payment")
+    speed = (invoice.get("checkout") or {}).get("speedPolicy")
+    if speed is not None and speed not in state.SPEED_POLICIES:
+        # We only create invoices that settle after at least one confirmation. One that settles on an unconfirmed
+        # transaction (HighSpeed) was not created by us as it is and must not mark anything paid.
+        raise InvoiceMismatch("invoice settles without a confirmation")
 
 
 def _update_info(payment: OrderPayment, **values) -> dict:
@@ -374,6 +380,10 @@ def _close_siblings(payment: OrderPayment) -> None:
         try:
             other.payment_provider.cancel_payment(other)
             order.log_action("pretix_btcpay.sibling_cancelled", data={"local_id": other.local_id})
+        except PaymentException as e:
+            # Not an error: cancel_payment looked at BTCPay first and found money on this invoice too, now
+            # confirmed and noted as a double payment, or still on its way, in which case it confirms later.
+            logger.info("BTCPay: open payment %s of paid order not cancelled: %s", other.full_id, e)
         except Exception:
             logger.exception("BTCPay: could not cancel open payment %s of paid order", other.full_id)
 
@@ -411,6 +421,7 @@ def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
         # since letting it out would roll the payment confirmation back with it: the payment counts even
         # when the seats are gone.
         with _order_rows(payment.order_id) as (order, payments):
+            paid_before = order.status == Order.STATUS_PAID
             try:
                 payment.confirm()
             except Quota.QuotaExceededException as e:
@@ -420,6 +431,10 @@ def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
                 _note(payment, "quota_exceeded", invoice)
             _clear_paid_holds(order, payments)
         payment.refresh_from_db()
+        if paid_before:
+            # The buyer paid a second invoice of an order another payment had already paid (two tabs, a switched
+            # payment method). The money counts and pretix shows the order as overpaid; someone has to refund it.
+            _note(payment, state.NOTE_PAID_TWICE, invoice)
 
     if invoice.get("status") == state.SETTLED and payment.state == OrderPayment.PAYMENT_STATE_CONFIRMED:
         _catch_up_order(payment, invoice)

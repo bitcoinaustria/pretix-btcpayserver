@@ -50,6 +50,17 @@ class LinkTest(unittest.TestCase):
                      "javascript:alert(1)", "//evil.example/", "", "https://pay.example.org@evil.example/"):
             self.assertFalse(is_own_link("https://pay.example.org", link), link)
 
+    def test_parser_differences(self):
+        # urlparse and browsers disagree on these; each is pay.example.org to Python but not to a browser,
+        # or carries credentials our instance never puts in a link.
+        for link in ("https://evil.example\\@pay.example.org/i/ABC", "https://evil.example\\@PAY.example.org:443/i",
+                     "https://pay.example.org\\@evil.example/", "https://user@pay.example.org/i/ABC",
+                     "https://user:pw@pay.example.org/i/ABC", "https://@pay.example.org/i/ABC",
+                     "https://pay.example.org/i/ABC\\..\\x", " https://pay.example.org/i/ABC",
+                     "https://pay.example.org/i/\tABC", "https://pay.example.org/i/\nABC", "https://pay.exa\x00mple.org/",
+                     None, 42):
+            self.assertFalse(is_own_link("https://pay.example.org", link), repr(link))
+
 
 class PermissionTest(unittest.TestCase):
     REQ = ["btcpay.store.cancreateinvoice:S", "btcpay.store.canviewinvoices:S", "btcpay.store.webhooks.canmodifywebhooks:S"]

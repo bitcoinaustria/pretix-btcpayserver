@@ -36,7 +36,8 @@ def webhook(request, *args, **kwargs):
     try:
         declared = int(request.META.get("CONTENT_LENGTH") or 0)
     except ValueError:
-        declared = 0  # a header the server did not sanity-check; the body check below still applies
+        # Django would fail on it again while reading the body; nginx normally answers 400 before we get here.
+        return HttpResponse("Bad Content-Length", status=400)
     if declared > MAX_BODY:
         return HttpResponse("Payload too large", status=413)
     raw_body = request.body
