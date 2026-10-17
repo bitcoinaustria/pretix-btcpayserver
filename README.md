@@ -5,7 +5,8 @@ Accept Bitcoin payments (Lightning and on-chain) in [pretix](https://pretix.eu/)
 BTCPay Server; pretix learns about it from a signed webhook, with a periodic poll as fallback.
 
 This is a fork of [dadofsambonzuki/pretix-btcpayserver](https://github.com/dadofsambonzuki/pretix-btcpayserver),
-hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork changes](#what-this-fork-changes).
+hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork changes](#what-this-fork-changes) and the
+[operator procedures and upgrade notes](docs/operations.md).
 
 ## Requirements
 
@@ -15,6 +16,23 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
 - PostgreSQL, as pretix recommends for production, and no pgbouncer in transaction mode in front of it: work on an
   order and the webhook registration are serialised with advisory locks (`locks.py`)
 - Redis (or memcached) as pretix' cache, only if refunds are created in BTCPay (see below)
+
+## Install
+
+Install the reviewed checkout into the same Python environment as pretix, then rebuild and restart the web and
+worker processes. Pin the commit you deploy; installing `pretix-btcpayserver` from PyPI alone does not select this fork.
+
+```bash
+python -m pip install /path/to/reviewed/pretix-btcpayserver
+python -m pretix migrate
+python -m pretix rebuild
+# Restart your pretix web and worker services, then enable the plugin for the event.
+```
+
+For Docker, build the plugin into your custom image and run the production asset build as described in the
+[pretix installation guide](https://docs.pretix.eu/self-hosting/installation/docker_smallscale/#install-a-plugin).
+Use the same image for web, workers and cron. Read [upgrade notes](docs/operations.md#upgrades) before replacing an
+existing payment integration: older invoices are not migrated automatically.
 
 ## Setup
 
@@ -32,24 +50,38 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
    Switched on, the key needs the optional permission, and every refund still waits for someone to approve it.
 3. Saving checks the key and registers the webhook on the store with a secret the plugin generates. There is one
    webhook per pretix event: `https://<pretix>/<organizer>/<event>/btcpay/webhook/`. Buyers never register it; without
-   a webhook the poll still finds every payment, a minute later. A new store or URL gets its webhook staged and only
-   switched to once the settings are saved, so a form that fails elsewhere keeps the working webhook.
+   a webhook, configured invoices are eligible for polling after a minute; actual recovery depends on cron, queue
+   delay and backlog. A new store or URL gets its webhook staged and only switched to once the settings are saved,
+   so a form that fails elsewhere keeps the working webhook.
+4. In the BTCPay store, check invoice monitoring separately from invoice expiration. This plugin overrides invoice
+   expiration, confirmation policy and payment tolerance for each new invoice; it inherits monitoring from the store.
+   Keep a monitoring period suitable for slow confirmations (the BTCPay 2.3.9 default is 24 hours). Check a real
+   invoice's `monitoringExpiration`, and keep cron and webhooks working. See [store settings](docs/operations.md#store-settings).
+5. Leave pretix’s *Generate tickets for pending orders* off to release tickets only after payment. Place a small
+   test-mode order. An unconfirmed on-chain transfer must leave the payment pending and the order
+   unpaid, with no paid ticket. After the required confirmations, the order must become paid. Check Lightning
+   separately if enabled; it settles immediately. Check webhook deliveries and a successful fallback poll before sales.
 
 ## How payments work
 
 | BTCPay invoice | pretix payment | order |
 |---|---|---|
 | `New` (also partially paid) | created | pending until its payment deadline |
-| `Processing`: fully paid, not yet confirmed | pending | reserved while BTCPay monitors the transaction (default a day) |
-| `Settled` (also `PaidOver`, `Marked`) | confirmed, also after it failed or was cancelled; money beyond the amount becomes its own confirmed payment | paid (overpaid) |
+| `Processing`: fully paid, not yet confirmed | pending | unpaid; seats held until the invoice’s `monitoringExpiration` + 1 hour |
+| `Settled` (also `PaidOver`, `Marked`) | confirmed, also after it failed or was cancelled; money beyond the amount becomes its own confirmed payment | paid (overpaid) if the current total is covered and quota permits |
 | `Expired` (also `PaidPartial`, `PaidLate`) | failed | back to its old payment deadline |
 | `Invalid` | failed; a confirmed payment is only flagged | back to its old payment deadline |
 
+- Unconfirmed on-chain funds never pay an order: `Processing` means pending, with seats held until the invoice's
+  `monitoringExpiration` plus one hour. Only `Settled` confirms the payment. Reconciliation refuses `HighSpeed`,
+  unknown or missing speed policies. Lightning settles immediately. An admin's “Mark settled” is trusted; verify
+  funds before using it.
 - The webhook payload is only used for the invoice id: the plugin reads the invoice back from the API and checks
   store, event, order, payment, amount and currency before it acts. A replayed, reordered or forged delivery can
   therefore not change anything the invoice itself does not say.
-- Every invoice runs until the order's payment deadline at the latest, and at most the configured minutes
-  (default 15): the exchange rate is fixed while it runs, and after the deadline the seats may be sold again.
+- Invoice expiration is capped by the configured minutes (default 15) and the remaining order payment deadline,
+  with BTCPay's minimum of one minute. The exchange rate is fixed while it runs; after the order deadline seats may
+  be sold again.
   The invoice asks for the configured speed policy and a payment tolerance of 0.
 - Each payment has exactly one invoice, created under a row lock in `execute_payment`. A payment whose invoice ran
   out is not continued: pretix starts a new payment with a new invoice. If a payment that the network has seen
@@ -60,9 +92,11 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
   BTCPay settles it (or an admin marks it settled), that payment counts, and other open BTCPay payments of the now
   paid order are cancelled. Money is never silently dropped.
 - Money beyond the invoice amount (an over payment, or a second transfer to a settled invoice) is booked as its own
-  confirmed payment once every payment on the invoice is confirmed (BTCPay's `paidAmount` also counts unconfirmed
+  confirmed payment once every non-invalid receipt on the invoice is confirmed (BTCPay's `paidAmount` also counts unconfirmed
   ones), so pretix shows the order as overpaid and refunding it leaves the ticket paid. This also finishes an order
   whose total was raised after the invoice was created, if the money now covers it.
+- A cancelled order stays cancelled even if a former invoice settles. The money is recorded as a confirmed payment;
+  return it if the order will not be fulfilled.
 - If pretix confirmed a payment but could not mark the order paid (a lock timeout), the next webhook or poll
   finishes it; if the seats are really gone, the order is flagged instead. The order row is locked while the
   balance is checked and the order marked paid, so an edit that changes the total cannot slip in between.
@@ -80,10 +114,11 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
   pretix's own order edits and payment-method switches take rows in different orders. A webhook that finds the
   order busy gets a 503 and BTCPay delivers it again; the poll skips it and retries. A busy advisory lock is checked
   before asking BTCPay, so it costs no API request. Row contention found after reading the invoice is also retried.
-- The original reservation deadline stays recorded until every payment that needs the hold has finished. The last
-  invoice to close restores it (with at least ten minutes to retry), even if another invoice originally extended
-  the order. The markers are cleared when the hold is released or the order is paid, so a later payment starts a
-  new hold from the current deadline.
+- A dropped or never-confirmed payment fails when BTCPay reports `Invalid` or `Expired`; the original deadline is
+  restored (at least ten minutes from release), unless another payment still needs the hold. A missing webhook is
+  recovered by polling. The last invoice to close restores the recorded deadline, even if another invoice
+  originally extended the order. The markers are cleared when the hold is released or the order is paid, so a later
+  payment starts a new hold from the current deadline.
 - The poll asks about invoices that are due, longest unchecked first, at most 300 per run, and starts no new one
   after 45 seconds (one that is running finishes; the next run continues): open ones every minute, settled or
   closed ones pretix has not caught up with every few minutes, the rest every half hour while BTCPay still watches
@@ -94,9 +129,18 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
   loads the plugin's payments of that half year each run, which is fine for thousands of payments, not for millions.
 - Every note for the team ("Needs attention") is logged again when the amount on the invoice changes, so money that
   arrives after a refund or on a closed invoice is never silent.
+- After an RBF replacement reduces a previously full payment, BTCPay can return the invoice from `Processing` to
+  `New`. pretix keeps the payment pending, refreshes the buyer page, and offers the same invoice to complete the
+  missing amount. No new invoice is needed.
+- A second invoice paid for an already covered order is confirmed too, logged as a double payment and shown as
+  overpayment in pretix. Refund the excess; replaying the webhook does not add another confirmation or note.
 - The pending page polls a status endpoint that needs the order secret and only reads the database.
 
 ## Known limitations
+
+- The control-panel invoice display caches successful API reads for 30 seconds, scoped by event, server, store and
+  invoice. A cold cache or outage still performs a synchronous request (5-second connect and 15-second read timeouts);
+  failures are not cached. Rendering these details never confirms a payment. Buyer status polling reads only pretix.
 
 Accepted for the Bitcoin Zitadelle, and worth knowing before you rely on the plugin:
 
@@ -135,8 +179,10 @@ docker exec -i <pretix container> pretix shell < tests/pretix_checks.py   # sync
 docker exec -i -e CHECK_EVENT=<organizer>/<test-event> <pretix container> pretix shell < tests/pretix_regressions.py
 ```
 
-The regression checks require a test-mode event and PostgreSQL. They use fake invoices, create temporary test
-orders and delete them afterwards, without changing payment settings or contacting BTCPay. They cover concurrent
+Both live scripts require a test-mode event and PostgreSQL. Run `pretix_checks.py` only on a dedicated disposable
+instance: it creates more than 500 orders, exercises settings writes (restored afterwards), and mocks the global poll.
+The regression checks use fake invoices, create temporary test orders and delete them afterwards, without changing
+payment settings or contacting BTCPay. They cover concurrent
 payment-method switching, row contention, balance protection, quota failures, surplus accounting and reservation
 cleanup when several invoices are in flight.
 
@@ -158,7 +204,7 @@ Compared with upstream 0.1.1:
 - API keys are checked against an allowlist: three required store permissions, one optional for refunds, nothing else.
 - Unconfirmed payments keep the order reserved, and a dropped one gives the seats back unless another payment
   still needs the reservation (one on its way in pretix, or one whose invoice has money on the way in BTCPay).
-- Invoices expire with the order at the latest, with explicit speed policy and zero payment tolerance.
+- Invoices use the remaining order payment window (minimum one minute), explicit speed policy and zero payment tolerance.
 - Invoices are only created in `execute_payment`; emails link to pretix' own payment page instead of creating
   invoices while rendering.
 - The status endpoint needs the order secret and does not call BTCPay.
