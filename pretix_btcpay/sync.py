@@ -162,21 +162,23 @@ def _note(payment: OrderPayment, note: str, invoice: dict, key: str | None = Non
 
 def _hold_order(payment: OrderPayment, invoice: dict) -> None:
     """Keep the order reserved while BTCPay still waits for a seen payment to confirm."""
-    order = Order.objects.get(pk=payment.order_id)
-    until = state.hold_until(_timestamp(invoice.get("monitoringExpiration")), now(), DEFAULT_MONITORING)
-    if order.status not in (Order.STATUS_PENDING, Order.STATUS_EXPIRED):
-        return
-    if order.status == Order.STATUS_PENDING and order.expires >= until - timedelta(minutes=5):
-        return
-    if "held_from" not in payment.info_data:
-        # The deadline before the first extension, to give the seats back if the payment fails.
-        _update_info(payment, held_from=int(order.expires.timestamp()))
-    try:
-        extend_order(order, until)
-    except OrderError as e:
-        # Expired and sold out in the meantime; the confirmation will say so once the payment settles.
-        logger.info("BTCPay: could not extend order %s: %s", order.full_code, e)
-        _note(payment, "hold_failed", invoice)
+    # extend_order trusts the supplied status. A stale expired snapshot could reopen an order just paid or
+    # canceled in the backend; keep the row locked from the status check through the extension.
+    with _order_rows(payment.order_id) as (order, payments):
+        until = state.hold_until(_timestamp(invoice.get("monitoringExpiration")), now(), DEFAULT_MONITORING)
+        if order.status not in (Order.STATUS_PENDING, Order.STATUS_EXPIRED):
+            return
+        if order.status == Order.STATUS_PENDING and order.expires >= until - timedelta(minutes=5):
+            return
+        if "held_from" not in payment.info_data:
+            # The deadline before the first extension, to give the seats back if the payment fails.
+            _update_info(payment, held_from=int(order.expires.timestamp()))
+        try:
+            extend_order(order, until)
+        except OrderError as e:
+            # Expired and sold out in the meantime; the confirmation will say so once the payment settles.
+            logger.info("BTCPay: could not extend order %s: %s", order.full_code, e)
+            _note(payment, "hold_failed", invoice)
 
 
 def _release_hold(payment: OrderPayment) -> None:
