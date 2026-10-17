@@ -94,10 +94,14 @@ class BTCPayServer(BasePaymentProvider):
                         raise
             if found is None:
                 found = next((w for w in client.list_webhooks(store_id) if w.get("url") == self.webhook_url), None)
-                secret = None  # an existing webhook whose secret we do not know gets a new one
+                # A URL alias can find our active webhook again. Keep its known secret: rotating it before a
+                # settings form actually saves would break the old URL's deliveries if another field fails.
+                secret = (self.settings.webhook_secret if found and found.get("id") == self.settings.webhook_id
+                          and store_id == str(self.settings.store_id) else None)
             events = sorted(WEBHOOK_EVENTS)
             current = sorted((found or {}).get("authorizedEvents", {}).get("specificEvents") or [])
-            if found and secret and found.get("url") == self.webhook_url and found.get("enabled") and current == events:
+            if (found and secret and found.get("url") == self.webhook_url and found.get("enabled")
+                    and found.get("automaticRedelivery") and current == events):
                 return found["id"]
             secret = secret or secrets.token_urlsafe(32)
             if found:
