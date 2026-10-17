@@ -534,6 +534,36 @@ with scope(organizer=event.organizer):
         BTCPayAPI.get_invoice = original_get
     check(inv not in asked_busy and stats["busy"] >= 1, f"besetzt: übersprungen, ohne BTCPay zu fragen ({stats['busy']} besetzt)")
 
+    print("Webhook, während die Bestellung gelöscht wird")
+    import hashlib
+    import hmac
+    from django.test import RequestFactory
+    from pretix_btcpay import views
+    order, payment, inv = order_with_payment()
+    body = json.dumps({"type": "InvoiceSettled", "invoiceId": inv, "storeId": store}).encode()
+    secret = provider.webhook_secrets()[0]
+    request = RequestFactory().post("/webhook/", data=body, content_type="application/json",
+                                    HTTP_BTCPAY_SIG="sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest())
+    request.event = event
+    settled = invoice(payment, inv, state.SETTLED)
+    original_get, original_apply = BTCPayAPI.get_invoice, views.apply
+
+    def deleted_meanwhile(prov, booked, *args):  # pretix löscht die Testbestellung, während der Webhook läuft
+        with _tx.atomic():
+            Order.gracefully_delete_bulk(event, Order.objects.filter(pk=order.pk, testmode=True))
+        booked._state.fields_cache.pop("order", None)  # wie nach einem refresh_from_db in sync
+        OrderPayment.objects.get(pk=booked.pk)
+
+    BTCPayAPI.get_invoice = lambda self, store_id, invoice_id: settled
+    views.apply = deleted_meanwhile
+    try:
+        response = views.webhook(request)
+    except Exception as e:
+        response = e
+    finally:
+        BTCPayAPI.get_invoice, views.apply = original_get, original_apply
+    check(getattr(response, "status_code", None) == 200, f"gelöscht: 200, keine erneute Zustellung ({response!r})")
+
     for pk in OrderPayment.objects.filter(order__pk__in=created).values_list("pk", flat=True):
         _cache.delete(f"pretix_btcpay_refund_{pk}")
     other.close()

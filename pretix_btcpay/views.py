@@ -95,7 +95,9 @@ def webhook(request, *args, **kwargs):
         return HttpResponse("Busy, please retry", status=503)
     except (Order.DoesNotExist, OrderPayment.DoesNotExist):
         # Deleted while we were at it (pretix deletes test-mode orders): nothing left to book, and a retry finds none.
-        logger.warning("BTCPay: payment %s was deleted while processing invoice %s", payment.full_id, invoice_id)
+        # Not payment.full_id: after a refresh it loads the order again, which is the row that is gone.
+        logger.warning("BTCPay: payment %s-P-%s was deleted while processing invoice %s", order.code, payment.local_id,
+                       invoice_id)
         return HttpResponse(status=200)
     return HttpResponse(status=200)
 
