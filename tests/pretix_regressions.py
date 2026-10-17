@@ -267,6 +267,61 @@ class PaymentRegressions(unittest.TestCase):
         order.refresh_from_db()
         self.assertLess(abs((order.expires - original).total_seconds()), 2)
 
+    def test_hold_cannot_reopen_an_order_paid_after_the_initial_read(self):
+        order, payment = self.make_order(order_state=Order.STATUS_EXPIRED)
+        other = self.other_connection()
+        original = sync._update_info
+        competing_commits = []
+
+        def pay_before_extension(current, **values):
+            if "held_from" in values:
+                # A backend finalization races the stale expired-order snapshot used by the hold.
+                other.set_autocommit(False)
+                try:
+                    with other.cursor() as cursor:
+                        cursor.execute("SELECT id FROM pretixbase_order WHERE id = %s FOR UPDATE NOWAIT", [order.pk])
+                        cursor.execute("UPDATE pretixbase_order SET status = %s WHERE id = %s", [Order.STATUS_PAID, order.pk])
+                    other.commit()
+                    competing_commits.append(True)
+                except DatabaseError as e:
+                    other.rollback()
+                    cause = e.__cause__
+                    self.assertEqual(getattr(cause, "sqlstate", None) or getattr(cause, "pgcode", None), "55P03")
+                    competing_commits.append(False)
+                finally:
+                    other.set_autocommit(True)
+            return original(current, **values)
+
+        with patch.object(sync, "_update_info", pay_before_extension):
+            sync.apply(self.provider, payment, self.invoice(payment, state.PROCESSING), "regression")
+        order.refresh_from_db()
+        self.assertEqual(len(competing_commits), 1)
+        if competing_commits[0]:
+            self.assertEqual(order.status, Order.STATUS_PAID, "A hold reopened an order already paid in the backend")
+        else:
+            self.assertEqual(order.status, Order.STATUS_PENDING)
+
+    def test_hold_retries_if_the_order_row_is_busy(self):
+        order, payment = self.make_order()
+        other = self.other_connection()
+        other.set_autocommit(False)
+        with other.cursor() as cursor:
+            cursor.execute("SELECT id FROM pretixbase_order WHERE id = %s FOR UPDATE", [order.pk])
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SET statement_timeout = '1s'")
+            with self.assertRaises(sync.OrderBusy):
+                sync.apply(self.provider, payment, self.invoice(payment, state.PROCESSING), "regression")
+        finally:
+            other.rollback()
+            with connection.cursor() as cursor:
+                cursor.execute("SET statement_timeout = '0'")
+        sync.apply(self.provider, payment, self.invoice(payment, state.PROCESSING), "regression")
+        order.refresh_from_db()
+        payment.refresh_from_db()
+        self.assertEqual(payment.state, "pending")
+        self.assertGreater(order.expires, now() + timedelta(hours=24))
+
     def test_hold_waits_for_pending_payment_from_another_provider(self):
         order, payment = self.make_order(payment_state="canceled")
         original = order.expires
