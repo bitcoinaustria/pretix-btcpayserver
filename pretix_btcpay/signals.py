@@ -40,8 +40,8 @@ LOG_TEXTS = {
     "pretix_btcpay.money_on_closed_invoice": _("Money arrived on a BTCPay invoice that had expired or was marked "
                                                "invalid. Check it in BTCPay: mark it as settled to confirm the "
                                                "payment, or return the money."),
-    "pretix_btcpay.double_payment": _("This order was already paid when BTCPay settled another of its invoices. Both "
-                                      "payments count; return one of them to the buyer."),
+    "pretix_btcpay.double_payment": _("This order was already paid when BTCPay settled another of its invoices. The "
+                                      "payment counts; the order is overpaid and the difference has to be returned."),
     "pretix_btcpay.settled_after_refund": _("BTCPay settled an invoice of a payment that was already refunded."),
     "pretix_btcpay.hold_failed": _("The order could not be kept reserved while the payment confirms."),
     "pretix_btcpay.hold_released": _("The payment was dropped; the order has its old payment deadline again."),

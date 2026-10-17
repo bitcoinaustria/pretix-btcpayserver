@@ -16,7 +16,7 @@ from decimal import Decimal
 from django.db import transaction as _tx
 from django.utils.timezone import now
 from django_scopes import scope, scopes_disabled
-from pretix.base.models import Event, Order, OrderPayment
+from pretix.base.models import Event, Order, OrderPayment, OrderRefund
 
 from pretix_btcpay import state, sync
 from pretix_btcpay.api import BTCPayAPI
@@ -61,7 +61,7 @@ with scope(organizer=event.organizer):
 
     def invoice(payment, invoice_id, status, extra="None", **kw):
         data = {"id": invoice_id, "storeId": store, "amount": "266.00", "currency": event.currency, "status": status,
-                "additionalStatus": extra, "paidAmount": "266.00",
+                "additionalStatus": extra, "paidAmount": "266.00", "checkout": {"speedPolicy": "MediumSpeed"},
                 "monitoringExpiration": int((now() + timedelta(hours=24)).timestamp()),
                 "metadata": {"orderId": payment.order.code, "pretixPaymentId": payment.pk, "pretixEvent": f"{ORGANIZER}/{EVENT}"}}
         data.update(kw)
@@ -90,7 +90,8 @@ with scope(organizer=event.organizer):
                        ("Event", {"metadata": {"orderId": order.code, "pretixPaymentId": payment.pk, "pretixEvent": "x/y"}}),
                        ("Zahlung", {"metadata": {"orderId": order.code, "pretixPaymentId": payment.pk + 999, "pretixEvent": f"{ORGANIZER}/{EVENT}"}}),
                        ("Rechnung", {"id": "FREMD"}),
-                       ("ohne Bestätigung (HighSpeed)", {"checkout": {"speedPolicy": "HighSpeed"}})):
+                       ("ohne Bestätigung (HighSpeed)", {"checkout": {"speedPolicy": "HighSpeed"}}),
+                       ("ohne Angabe der Bestätigungen", {"checkout": {}})):
         try:
             sync.apply(provider, payment, invoice(payment, inv, state.SETTLED, **bad), "check")
             reload(order, payment)
@@ -124,6 +125,33 @@ with scope(organizer=event.organizer):
     reload(order, payment)
     notes = order.all_logentries().filter(action_type="pretix_btcpay.invalid_after_confirm").count()
     check(payment.state == "confirmed" and order.status == "p" and notes == 1, "Invalid danach: bleibt bezahlt, vermerkt für einen Menschen")
+
+    print("Zweite Rechnung einer bezahlten Bestellung bezahlt")
+
+    def second_payment(order):
+        counter[0] += 1
+        inv2 = f"CHECK{order.code}{counter[0]}"
+        return order.payments.create(provider=sync.PROVIDER, amount=order.total, state=OrderPayment.PAYMENT_STATE_CREATED,
+                                     info=json.dumps({"invoice_id": inv2})), inv2
+
+    order, payment, inv = order_with_payment()
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED), "check")
+    second, inv2 = second_payment(order)
+    for _ in range(2):  # doppelt zugestellt
+        sync.apply(provider, second, invoice(second, inv2, state.SETTLED), "check")
+    reload(order, second)
+    twice = order.all_logentries().filter(action_type="pretix_btcpay.double_payment").count()
+    check(second.state == "confirmed" and order.status == "p" and twice == 1,
+          f"beide bestätigt, einmal für eine Erstattung vermerkt ({second.state}, {twice})")
+    order, payment, inv = order_with_payment()
+    sync.apply(provider, payment, invoice(payment, inv, state.SETTLED), "check")
+    order.refunds.create(payment=payment, source=OrderRefund.REFUND_SOURCE_ADMIN, state=OrderRefund.REFUND_STATE_DONE,
+                         amount=order.total, provider="manual")
+    second, inv2 = second_payment(order)
+    sync.apply(provider, second, invoice(second, inv2, state.SETTLED), "check")
+    reload(order, second)
+    twice = order.all_logentries().filter(action_type="pretix_btcpay.double_payment").count()
+    check(second.state == "confirmed" and twice == 0, f"erste Zahlung schon erstattet: kein Hinweis auf Erstattung ({twice})")
 
     print("Überzahlt, zweimal gemeldet, dann noch mehr")
     order, payment, inv = order_with_payment()
@@ -305,7 +333,6 @@ with scope(organizer=event.organizer):
     check(provider.payment_refund_supported(payment), "an: für eine bestätigte Zahlung")
 
     print("Erstattung ohne klare Antwort")
-    from pretix.base.models import OrderRefund
     from pretix.base.payment import PaymentException
     from pretix_btcpay.api import BTCPayError as _Err
     from django.core.cache import cache as _cache

@@ -121,10 +121,9 @@ def check_invoice(payment: OrderPayment, invoice: dict, store_id: str) -> None:
         raise InvoiceMismatch("invoice belongs to another event")
     if _decimal(invoice.get("amount")) != payment.amount or invoice.get("currency") != payment.order.event.currency:
         raise InvoiceMismatch("invoice amount or currency differs from the payment")
-    speed = (invoice.get("checkout") or {}).get("speedPolicy")
-    if speed is not None and speed not in state.SPEED_POLICIES:
-        # We only create invoices that settle after at least one confirmation. One that settles on an unconfirmed
-        # transaction (HighSpeed) was not created by us as it is and must not mark anything paid.
+    if (invoice.get("checkout") or {}).get("speedPolicy") not in state.SPEED_POLICIES:
+        # We only create invoices that settle after at least one confirmation, and BTCPay always reports the policy.
+        # One that settles on an unconfirmed transaction (HighSpeed), or does not say, must not mark anything paid.
         raise InvoiceMismatch("invoice settles without a confirmation")
 
 
@@ -421,7 +420,8 @@ def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
         # since letting it out would roll the payment confirmation back with it: the payment counts even
         # when the seats are gone.
         with _order_rows(payment.order_id) as (order, payments):
-            paid_before = order.status == Order.STATUS_PAID
+            # Already paid, and still covered after refunds: this money comes on top. Read under the row lock.
+            paid_before = order.status == Order.STATUS_PAID and _net_paid(order) >= order.total
             try:
                 payment.confirm()
             except Quota.QuotaExceededException as e:
@@ -429,12 +429,13 @@ def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
                 logger.warning("BTCPay: payment %s confirmed but order not paid: %s", payment.full_id, e)
                 _update_info(payment, quota_exceeded=True)
                 _note(payment, "quota_exceeded", invoice)
+            if paid_before:
+                # The buyer paid a second invoice of an order another payment had already paid (two tabs, a switched
+                # payment method). The money counts and pretix shows the order as overpaid; someone has to refund
+                # the difference. Noted in the same transaction as the confirmation, so a crash cannot lose it.
+                _note(payment, state.NOTE_PAID_TWICE, invoice)
             _clear_paid_holds(order, payments)
         payment.refresh_from_db()
-        if paid_before:
-            # The buyer paid a second invoice of an order another payment had already paid (two tabs, a switched
-            # payment method). The money counts and pretix shows the order as overpaid; someone has to refund it.
-            _note(payment, state.NOTE_PAID_TWICE, invoice)
 
     if invoice.get("status") == state.SETTLED and payment.state == OrderPayment.PAYMENT_STATE_CONFIRMED:
         _catch_up_order(payment, invoice)

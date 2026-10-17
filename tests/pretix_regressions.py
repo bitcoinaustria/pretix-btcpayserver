@@ -79,6 +79,7 @@ class PaymentRegressions(unittest.TestCase):
         return {
             "id": payment.info_data["invoice_id"], "storeId": "REVIEW", "amount": str(payment.amount),
             "currency": EVENT_OBJECT.currency, "status": status, "additionalStatus": "None", "paidAmount": paid,
+            "checkout": {"speedPolicy": "MediumSpeed"},
             "monitoringExpiration": int((now() + timedelta(hours=monitoring_hours)).timestamp()),
             "metadata": {"pretixPaymentId": payment.pk, "orderId": payment.order.code,
                          "pretixEvent": sync.event_ref(EVENT_OBJECT)},
