@@ -54,7 +54,7 @@ def webhook(request, *args, **kwargs):
 
     try:
         payload = json.loads(raw_body)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return HttpResponseBadRequest("Invalid JSON payload")
     if not isinstance(payload, dict):
         return HttpResponseBadRequest("Invalid JSON payload")
