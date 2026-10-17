@@ -6,10 +6,11 @@ configured for an event in test mode, for example the local test pretix of the B
     docker exec -i <pretix container> pretix shell < tests/pretix_checks.py
 
 It creates test-mode orders in that event, prints one line per check (the last says whether all passed) and deletes
-its orders again.
+its orders again. It requires a dedicated test instance; settings are restored afterwards.
 """
 import json
 import os
+from contextlib import ExitStack
 from datetime import timedelta
 from decimal import Decimal
 
@@ -39,8 +40,24 @@ def check(ok, message):
 
 with scopes_disabled():
     event = Event.objects.get(organizer__slug=ORGANIZER, slug=EVENT)
-with scope(organizer=event.organizer):
+if not event.testmode:
+    raise RuntimeError("These checks require a test-mode event on a dedicated test instance.")
+with scope(organizer=event.organizer), ExitStack() as cleanup:
     provider = event.get_payment_providers()[sync.PROVIDER]
+    # These checks exercise settings writes; leave the operator's exact values intact, also on failure.
+    prefix = f"payment_{sync.PROVIDER}_"
+    saved = dict(event._settings_objects.filter(key__in=[prefix + name for name in
+                 ("refunds", "pending_webhook", "webhook_id", "webhook_secret")]).values_list("key", "value"))
+
+    def restore_settings():
+        for name in ("refunds", "pending_webhook", "webhook_id", "webhook_secret"):
+            if prefix + name in saved:
+                provider.settings.set(name, saved[prefix + name])
+            else:
+                del provider.settings[name]
+        event.settings.flush()
+
+    cleanup.callback(restore_settings)
     store = str(provider.settings.store_id)
     channel = event.organizer.sales_channels.get(identifier="web")
     counter = [0]
@@ -653,6 +670,8 @@ with scope(organizer=event.organizer):
     with transaction.atomic():
         Order.gracefully_delete_bulk(event, Order.objects.filter(pk__in=created, testmode=True))
 
-    del provider.settings["refunds"]
 
 print(f"{'ALLE BESTANDEN' if all(results) else 'NICHT BESTANDEN'}: {sum(results)} von {len(results)}")
+
+if not all(results):
+    raise AssertionError("Payment checks failed")
