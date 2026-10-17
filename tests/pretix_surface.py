@@ -15,11 +15,12 @@ from django.core.exceptions import ValidationError
 from django.db import connection, transaction
 from django.test import RequestFactory
 from django.utils.timezone import now
+from django.utils.translation import override
 from django_scopes import scope, scopes_disabled
 from pretix.base.models import Event, Order, OrderPayment
 from pretix.control.forms.event import ProviderForm
 
-from pretix_btcpay import api, views
+from pretix_btcpay import api, state as invoice_state, sync, views
 from pretix_btcpay.api import BTCPayAPI, BTCPayError, WEBHOOK_EVENTS
 from pretix_btcpay.checks import REQUIRED_PERMISSIONS
 from pretix_btcpay.payment import BTCPayServer
@@ -55,12 +56,23 @@ class SurfaceChecks(unittest.TestCase):
 
     def make_payment(self, info=None, state='created'):
         order = Order.objects.create(
-            event=EVENT_OBJECT, status=Order.STATUS_PENDING, total=Decimal('1.00'), testmode=True,
+            event=self.provider.event, status=Order.STATUS_PENDING, total=Decimal('1.00'), testmode=True,
             expires=now() + timedelta(minutes=30), email=None, locale='en',
             sales_channel=EVENT_OBJECT.organizer.sales_channels.get(identifier='web'),
         )
         return order.payments.create(provider='btcpay_greenfield', amount=Decimal('1.00'), state=state,
                                      info=json.dumps(info or {}))
+
+    def isolate_event(self):
+        # Settings changes must be checked against only our invoices, not a previous regtest run's orders.
+        event = Event.objects.create(organizer=EVENT_OBJECT.organizer, slug='review-c-store-switch',
+                                     name='Store switch regression', date_from=now(), testmode=True,
+                                     currency=EVENT_OBJECT.currency)
+        self.provider = BTCPayServer(event)
+        for key, value in dict(url='https://pay.example.org', api_key='test-only-key', store_id='REVIEW',
+                               webhook_id='WEBHOOK', webhook_secret='old-test-secret').items():
+            self.provider.settings.set(key, value)
+        self.provider.__dict__['client'] = self.client
 
     def clean(self, **changes):
         data = {'url': 'https://pay.example.org', 'api_key': 'test-only-key', 'store_id': 'REVIEW'}
@@ -148,6 +160,62 @@ class SurfaceChecks(unittest.TestCase):
                 self.assertTrue(form.is_valid(), form.errors)
                 self.assertEqual(self.provider.webhook_secrets(), ['old-test-secret'])
         self.client.update_webhook.assert_not_called()
+
+    def test_store_switch_guard_uses_the_invoice_state_and_monitoring_deadline(self):
+        self.isolate_event()
+        at = now()
+        for status, payment_state, monitoring_hours, blocked in (
+                ('New', 'created', 1, True), ('Processing', 'pending', 1, True),
+                ('Settled', 'failed', -1, True), ('Settled', 'canceled', -1, True),
+                ('Expired', 'failed', 1, True), ('Expired', 'failed', -1, False),
+                ('Invalid', 'failed', 1, False), ('Settled', 'confirmed', 1, False)):
+            with self.subTest(status=status, payment_state=payment_state, monitoring_hours=monitoring_hours):
+                payment = self.make_payment({'invoice_id': 'EXISTING', 'status': status,
+                    'monitoring_until': int((at + timedelta(hours=monitoring_hours)).timestamp())}, state=payment_state)
+                with patch.object(self.provider, 'ensure_webhook'), override('en'):
+                    if blocked:
+                        with self.assertRaisesRegex(ValidationError, 'BTCPay invoices of this event'):
+                            self.clean(url='https://new.example.org')
+                    else:
+                        self.clean(url='https://new.example.org')
+                Order.gracefully_delete_bulk(self.provider.event, Order.objects.filter(pk=payment.order_id))
+
+    def test_other_server_skips_api_updates_checked_and_logs_once(self):
+        payment = self.make_payment({'invoice_id': 'EXISTING', 'status': 'New',
+            'server': 'https://old.example.org', 'store_id': 'REVIEW'})
+        for _ in range(2):
+            sync.sync_payment(self.provider, payment, 'regression')
+        payment.refresh_from_db()
+        self.client.get_invoice.assert_not_called()
+        self.assertEqual(payment.state, 'created')
+        self.assertGreater(payment.info_data['checked'], 0)
+        self.assertEqual(payment.order.all_logentries().filter(action_type='pretix_btcpay.other_store').count(), 1)
+        self.assertTrue(sync.same_origin({'server': 'HTTPS://PAY.example.org:443/', 'store_id': 'REVIEW'},
+                                        sync.invoice_origin(self.provider)))
+
+    def test_store_switch_is_refused_while_settled_invoice_has_unbooked_surplus(self):
+        self.isolate_event()
+        payment = self.make_payment({'invoice_id': 'EXISTING', **sync.invoice_origin(self.provider)}, state='confirmed')
+        order = payment.order
+        order.status = Order.STATUS_PAID
+        order.save(update_fields=['status'])
+        invoice = {'id': 'EXISTING', 'storeId': 'REVIEW', 'amount': '1.00', 'currency': self.provider.event.currency,
+            'status': invoice_state.SETTLED, 'additionalStatus': 'PaidOver', 'paidAmount': '2.00',
+            'checkout': {'speedPolicy': 'MediumSpeed'},
+            'monitoringExpiration': int((now() + timedelta(hours=1)).timestamp()),
+            'metadata': {'pretixPaymentId': payment.pk, 'orderId': order.code,
+                         'pretixEvent': sync.event_ref(self.provider.event)}}
+        # The base transfer has settled; a later transfer is visible but must not be booked before confirmation.
+        self.client.get_invoice_payment_methods.return_value = [{'rate': '1', 'payments': [
+            {'status': 'Settled', 'value': '1.00'}, {'status': 'Processing', 'value': '1.00'}]}]
+        sync.apply(self.provider, payment, invoice, 'regression')
+        payment.refresh_from_db()
+        self.assertTrue(payment.info_data['surplus_open'])
+        self.assertEqual(order.payments.count(), 1)
+        self.assertIsNotNone(sync.next_check(payment, now()))
+        with patch.object(self.provider, 'ensure_webhook'), override('en'):
+            with self.assertRaisesRegex(ValidationError, 'BTCPay invoices of this event'):
+                self.clean(url='https://new.example.org')
 
     def test_signed_deep_json_is_bad_request(self):
         body = b'[' * 20000 + b'0' + b']' * 20000
