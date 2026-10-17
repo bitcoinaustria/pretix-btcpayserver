@@ -8,7 +8,7 @@ class BTCPayAppConfig(PluginConfig):
 
     class PretixPluginMeta:
         name = "BTCPay Server"
-        author = "Nathan Day"
+        author = "Bitcoin Austria"
         description = "Pay with Bitcoin (Lightning / on-chain) via BTCPay Server"
         visible = True
         version = "0.2.0"

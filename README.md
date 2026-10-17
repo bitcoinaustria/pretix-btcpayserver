@@ -4,8 +4,9 @@ Accept Bitcoin payments (Lightning and on-chain) in [pretix](https://pretix.eu/)
 [BTCPay Server](https://btcpayserver.org/) **Greenfield API**. The buyer pays on the checkout page of your own
 BTCPay Server; pretix learns about it from a signed webhook, with a periodic poll as fallback.
 
-This is a fork of [dadofsambonzuki/pretix-btcpayserver](https://github.com/dadofsambonzuki/pretix-btcpayserver),
-hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork changes](#what-this-fork-changes) and the
+Maintained by Bitcoin Austria, in use for a mainnet event (Bitcoin Zitadelle 2027). It started as a fork of
+[dadofsambonzuki/pretix-btcpayserver](https://github.com/dadofsambonzuki/pretix-btcpayserver) by Nathan Day (MIT) and
+has since been rewritten; see [Changes from the original plugin](#changes-from-the-original-plugin) and the
 [operator procedures and upgrade notes](docs/operations.md).
 
 ## Requirements
@@ -20,7 +21,7 @@ hardened for a mainnet event (Bitcoin Zitadelle 2027). See [What this fork chang
 ## Install
 
 Install the reviewed checkout into the same Python environment as pretix, then rebuild and restart the web and
-worker processes. Pin the commit you deploy; installing `pretix-btcpayserver` from PyPI alone does not select this fork.
+worker processes. Pin the commit you deploy; `pretix-btcpayserver` on PyPI is the original plugin, not this one.
 
 ```bash
 python -m pip install /path/to/reviewed/pretix-btcpayserver
@@ -166,7 +167,7 @@ Accepted for the Bitcoin Zitadelle, and worth knowing before you rely on the plu
   server addresses and same-store key rotation are allowed. Each invoice remembers where it was created; one from
   another server/store is noted once and skipped without asking the new store; see
   [store changes](docs/operations.md#changing-the-server-or-store).
-- Only the current invoice of each payment is reconciled. Payments from upstream or from earlier commits of this fork
+- Only the current invoice of each payment is reconciled. Payments created by the original plugin or by earlier development versions
   that kept several invoices per payment would need a migration first; the Bitcoin Zitadelle starts on a fresh install.
 
 ## Security notes
@@ -214,11 +215,11 @@ End-to-end tests on regtest (on-chain, Lightning, expiry, partial, over and late
 switched payment methods, lost webhooks, forged webhooks, refunds, a rush of buyers) live in the Bitcoin Zitadelle
 website repository (`scripts/pretix-e2e-bitcoin.mjs`, run with `PRETIX_BTCPAY=greenfield`).
 
-## What this fork changes
+## Changes from the original plugin
 
-Compared with upstream 0.1.1:
+Compared with the original 0.1.1:
 
-- Expired and invalid invoices fail their payment (upstream ignored every event but `InvoiceSettled`).
+- Expired and invalid invoices fail their payment (the original ignored every event but `InvoiceSettled`).
 - The invoice state is always read from the API, never taken from the webhook payload, and checked against the payment.
 - Settled invoices of failed or cancelled payments still confirm them, instead of being dropped with a 200.
 - Over payments and second transfers become their own confirmed payments; an interrupted confirmation is finished.
