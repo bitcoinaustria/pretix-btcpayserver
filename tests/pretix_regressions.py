@@ -535,8 +535,12 @@ class PaymentRegressions(unittest.TestCase):
                 order, first = self.make_order(payment_state="canceled")
                 original = order.expires
                 second = self.add_payment(order)
+                monitoring = int((now() + timedelta(hours=24)).timestamp())
                 for payment in (first, second):
-                    sync.apply(self.provider, payment, self.invoice(payment, state.PROCESSING), "regression")
+                    invoice = self.invoice(payment, state.PROCESSING)
+                    # Both invoices share a deadline. Crossing a clock second must not create a second hold owner.
+                    invoice["monitoringExpiration"] = monitoring
+                    sync.apply(self.provider, payment, invoice, "regression")
                 second.refresh_from_db()
                 self.assertNotIn("held_from", second.info_data)
                 closing = (second, first) if reverse else (first, second)
