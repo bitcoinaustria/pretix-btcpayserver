@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import unittest
+from collections import OrderedDict
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from django.test import RequestFactory
 from django.utils.timezone import now
 from django_scopes import scope, scopes_disabled
 from pretix.base.models import Event, Order, OrderPayment
+from pretix.control.forms.event import ProviderForm
 
 from pretix_btcpay import api, views
 from pretix_btcpay.api import BTCPayAPI, BTCPayError, WEBHOOK_EVENTS
@@ -66,6 +68,19 @@ class SurfaceChecks(unittest.TestCase):
         with patch('pretix_btcpay.payment.BTCPayAPI', return_value=self.client):
             return self.provider.settings_form_clean({'payment_btcpay_greenfield_' + k: v for k, v in data.items()})
 
+    def settings_form(self, enabled=True, **changes):
+        prefix = self.provider.settings.get_prefix()
+        data = {'url': 'https://pay.example.org', 'api_key': 'test-only-key', 'store_id': 'REVIEW',
+                'speed_policy': 'MediumSpeed', '_restrict_to_sales_channels': ['web']}
+        if enabled:
+            data['_enabled'] = 'on'
+        data.update(changes)
+        form = ProviderForm(obj=EVENT_OBJECT, settingspref=prefix, provider=self.provider,
+                            data={prefix + k: v for k, v in data.items()})
+        form.fields = OrderedDict((prefix + k, v) for k, v in self.provider.settings_form_fields.items())
+        form.prepare_fields()
+        return form
+
     def signed_request(self, body):
         request = RequestFactory().post('/webhook/', data=body, content_type='application/json',
             HTTP_BTCPAY_SIG='sha256=' + hmac.new(b'old-test-secret', body, hashlib.sha256).hexdigest())
@@ -96,6 +111,43 @@ class SurfaceChecks(unittest.TestCase):
         self.make_payment({'invoice_id': 'EXISTING'})
         self.clean(api_key='replacement-test-only-key')
         self.client.current_key.assert_called_once()
+
+    def test_disabled_provider_cannot_change_or_clear_an_open_invoice_connection(self):
+        self.make_payment({'invoice_id': 'EXISTING', 'status': 'New'})
+        # pretix skips settings_form_clean when disabled; field validation must still protect outstanding invoices.
+        for changes in ({'store_id': 'OTHER'}, {'url': 'https://other.example.org'},
+                        {'store_id': ''}, {'url': ''}):
+            with self.subTest(changes=changes):
+                form = self.settings_form(enabled=False, **changes)
+                self.assertFalse(form.is_valid())
+                self.assertTrue(any('BTCPay invoices of this event' in message or 'BTCPay-Rechnungen dieses Events' in message
+                                    for messages in form.errors.values() for message in messages))
+        self.client.current_key.assert_not_called()
+        self.client.update_webhook.assert_not_called()
+
+    def test_disabling_without_changing_the_connection_remains_allowed(self):
+        self.make_payment({'invoice_id': 'EXISTING', 'status': 'Processing'})
+        with patch.object(self.provider, 'settings_form_clean') as clean:
+            form = self.settings_form(enabled=False)
+            self.assertTrue(form.is_valid(), form.errors)
+            clean.assert_not_called()
+        self.client.current_key.assert_not_called()
+
+    def test_disabled_connection_can_change_after_all_invoices_are_final(self):
+        # Other test runs may have open invoices on the shared event; simulate a fully reconciled event here.
+        with patch('pretix_btcpay.payment.still_open', return_value=False):
+            form = self.settings_form(enabled=False, url='https://other.example.org', store_id='OTHER')
+            self.assertTrue(form.is_valid(), form.errors)
+        self.client.current_key.assert_not_called()
+
+    def test_real_settings_form_accepts_normalized_aliases_with_open_invoices(self):
+        self.make_payment({'invoice_id': 'EXISTING', 'status': 'New'})
+        for alias in ('HTTPS://PAY.EXAMPLE.ORG:443/', 'https://PAY.example.org/', 'https://pay.example.org:443'):
+            with self.subTest(alias=alias), patch('pretix_btcpay.payment.BTCPayAPI', return_value=self.client):
+                form = self.settings_form(url=alias)
+                self.assertTrue(form.is_valid(), form.errors)
+                self.assertEqual(self.provider.webhook_secrets(), ['old-test-secret'])
+        self.client.update_webhook.assert_not_called()
 
     def test_signed_deep_json_is_bad_request(self):
         body = b'[' * 20000 + b'0' + b']' * 20000

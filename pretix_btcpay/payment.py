@@ -37,6 +37,26 @@ class WebhookBusy(Exception):
     """Someone else is registering the webhook right now."""
 
 
+class ConnectionField:
+    def __init__(self, *, provider, origin_key, **kwargs):
+        self.provider, self.origin_key = provider, origin_key
+        super().__init__(**kwargs)
+
+    def validate(self, value):
+        super().validate(value)
+        # pretix skips the provider's form clean when disabled. Existing invoices still need this connection,
+        # including if a disabled provider's URL or store is cleared rather than replaced.
+        self.provider.check_connection_change(**{self.origin_key: value})
+
+
+class ServerURLField(ConnectionField, forms.URLField):
+    pass
+
+
+class StoreIDField(ConnectionField, forms.CharField):
+    pass
+
+
 class BTCPayServer(BasePaymentProvider):
     identifier = PROVIDER
     verbose_name = _("BTCPay Server")
@@ -156,7 +176,8 @@ class BTCPayServer(BasePaymentProvider):
     @property
     def settings_form_fields(self):
         d = OrderedDict([
-            ("url", forms.URLField(
+            ("url", ServerURLField(
+                provider=self, origin_key="server",
                 label=_("BTCPay Server URL"),
                 help_text=_("The base URL of your BTCPay Server instance, e.g. https://btcpay.example.com"),
             )),
@@ -169,7 +190,8 @@ class BTCPayServer(BasePaymentProvider):
                     "only if refunds are created in BTCPay. Keys with more are refused."
                 ),
             )),
-            ("store_id", forms.CharField(
+            ("store_id", StoreIDField(
+                provider=self, origin_key="store_id",
                 label=_("Store ID"),
                 help_text=_("The ID of the BTCPay Server store that receives the payments."),
             )),
@@ -209,6 +231,19 @@ class BTCPayServer(BasePaymentProvider):
         d.move_to_end("_enabled", last=False)
         return d
 
+    def check_connection_change(self, **changes):
+        origin = invoice_origin(self)
+        if self.settings.store_id and not same_origin(origin, {**origin, **changes}):
+            # Invoices are read from the configured store only: after a switch, money on an open invoice of the old
+            # one would never be booked, and its seats would be sold again.
+            at = now()
+            open_ = sum(1 for p in OrderPayment.objects.filter(order__event=self.event, provider=self.identifier)
+                        .exclude(info__isnull=True).exclude(info="") if still_open(p, at))
+            if open_:
+                raise ValidationError(_("{count} BTCPay invoices of this event can still be paid or are not booked "
+                                        "yet. Change the server or store only after they have run out or are "
+                                        "booked.").format(count=open_))
+
     def settings_form_clean(self, cleaned_data):
         """Check URL, key and store before saving, and register the webhook."""
         url = cleaned_data.get(f"payment_{self.identifier}_url")
@@ -222,17 +257,7 @@ class BTCPayServer(BasePaymentProvider):
         local = parsed.hostname in ("localhost", "127.0.0.1", "::1") or (parsed.hostname or "").endswith(".localhost")
         if parsed.scheme != "https" and not local:
             raise ValidationError(_("The BTCPay Server URL has to use https."))
-        moved = not same_origin(invoice_origin(self), {"server": url, "store_id": store_id})
-        if moved and self.settings.store_id:
-            # Invoices are read from the configured store only: after a switch, money on an open invoice of the old
-            # one would never be booked, and its seats would be sold again.
-            at = now()
-            open_ = sum(1 for p in OrderPayment.objects.filter(order__event=self.event, provider=self.identifier)
-                        .exclude(info__isnull=True).exclude(info="") if still_open(p, at))
-            if open_:
-                raise ValidationError(_("{count} BTCPay invoices of this event can still be paid or are not booked "
-                                        "yet. Change the server or store only after they have run out or are "
-                                        "booked.").format(count=open_))
+        self.check_connection_change(server=url, store_id=store_id)
         client = BTCPayAPI(url=url, api_key=str(key))
         try:
             info = client.current_key()
