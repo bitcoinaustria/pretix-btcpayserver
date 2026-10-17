@@ -188,17 +188,27 @@ python -m unittest discover -s tests -t .                  # the state machine a
 docker exec -i <pretix container> pretix shell < tests/pretix_checks.py   # sync against a real pretix, fake invoices
 docker exec -i -e CHECK_EVENT=<organizer>/<test-event> <pretix container> pretix shell < tests/pretix_regressions.py
 docker exec -i -e CHECK_EVENT=<organizer>/<test-event> <pretix container> pretix shell < tests/pretix_surface.py
+docker exec -i <pretix container> pretix shell < tests/pretix_settings_race.py
+docker exec -i -e REVIEW_MOVE_SERVER=1 <pretix container> pretix shell < tests/pretix_settings_race.py
+docker exec -i <pretix container> pretix shell < tests/pretix_settings_stale.py
+docker exec -i -e REVIEW_MOVE_SERVER=1 <pretix container> pretix shell < tests/pretix_settings_stale.py
+docker exec -i -e CHECK_EVENT=<organizer>/<test-event> <pretix container> pretix shell < tests/pretix_settings_surface.py
 ```
 
-All three live scripts require a test-mode event and PostgreSQL. Run `pretix_checks.py` only on a dedicated disposable
+All live scripts require a test-mode event and PostgreSQL. Run `pretix_checks.py` only on a dedicated disposable
 instance: it creates more than 500 orders, exercises settings writes (restored afterwards), and mocks the global poll.
 The regression checks use fake invoices, create temporary test orders and delete them afterwards, without changing
 payment settings or contacting BTCPay. They cover concurrent
 payment-method switching, row contention, balance protection, quota failures, surplus accounting and reservation
 cleanup when several invoices are in flight.
 The surface checks use fake API responses and roll back temporary settings and orders. They cover webhook setup,
-input validation, authenticated status reads, cached display and the server/store change guard. The surplus regression
-currently fails because that guard permits a switch before an already confirmed invoice's extra money is booked.
+input validation, authenticated status reads, cached display and the server/store change guard, including a settled
+invoice whose extra money is not booked yet.
+The settings race and stale-form checks use the `zitadelle/2027` test event to create isolated temporary events, with
+fake API responses. Run each with and without `REVIEW_MOVE_SERVER=1` to cover server and store changes. The settings
+surface checks exercise overlapping saves through pretix's real payment settings view. These scripts cover invoice
+creation against a connection change, older forms restoring a replaced connection, and ordinary settings saves
+leaving checkouts concurrent; they delete their temporary events without changing the main event's settings.
 
 End-to-end tests on regtest (on-chain, Lightning, expiry, partial, over and late payments, double spends,
 switched payment methods, lost webhooks, forged webhooks, refunds, a rush of buyers) live in the Bitcoin Zitadelle
