@@ -26,7 +26,7 @@ from pretix.multidomain.urlreverse import eventreverse, eventreverse_absolute
 from . import state
 from .api import BTCPayAPI, BTCPayError, WEBHOOK_EVENTS, is_own_link, missing_permissions
 from .locks import WEBHOOK, advisory_lock
-from .sync import PROVIDER, OrderBusy, event_ref, invoice_origin, is_surplus, still_open, sync_payment
+from .sync import PROVIDER, OrderBusy, event_ref, invoice_origin, is_surplus, same_origin, still_open, sync_payment
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +222,7 @@ class BTCPayServer(BasePaymentProvider):
         local = parsed.hostname in ("localhost", "127.0.0.1", "::1") or (parsed.hostname or "").endswith(".localhost")
         if parsed.scheme != "https" and not local:
             raise ValidationError(_("The BTCPay Server URL has to use https."))
-        moved = invoice_origin(self) != {"server": str(url).rstrip("/"), "store_id": str(store_id)}
+        moved = not same_origin(invoice_origin(self), {"server": url, "store_id": store_id})
         if moved and self.settings.store_id:
             # Invoices are read from the configured store only: after a switch, money on an open invoice of the old
             # one would never be booked, and its seats would be sold again.

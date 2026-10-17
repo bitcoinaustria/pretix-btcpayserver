@@ -606,11 +606,11 @@ with scope(organizer=event.organizer):
     order, payment, inv = order_with_payment()  # offen, im eingestellten Store
     ident = provider.identifier
 
-    def settings_save(store_id):
+    def settings_save(store_id, url=None):
         original_key = BTCPayAPI.current_key
         BTCPayAPI.current_key = lambda self: (_ for _ in ()).throw(_Err("nein", status=401))  # nach unserer Prüfung abbrechen
         try:
-            provider.settings_form_clean({f"payment_{ident}_url": str(provider.settings.url),
+            provider.settings_form_clean({f"payment_{ident}_url": url or str(provider.settings.url),
                                           f"payment_{ident}_api_key": SECRET_REDACTED, f"payment_{ident}_store_id": store_id})
         except ValidationError as e:
             return " ".join(e.messages)
@@ -624,6 +624,10 @@ with scope(organizer=event.organizer):
     unchanged = settings_save(store)
     check("invoices of this event" not in unchanged and "Rechnungen dieses Events" not in unchanged,
           f"gleicher Store: nicht wegen offener Rechnungen abgelehnt ({unchanged[:60]})")
+    scheme, rest = str(provider.settings.url).split("://", 1)
+    alias = settings_save(store, f"{scheme.upper()}://{rest.upper()}/")
+    check("invoices of this event" not in alias and "Rechnungen dieses Events" not in alias,
+          f"gleicher Server anders geschrieben: nicht abgelehnt ({alias[:60]})")
     at = now()
     payment.confirm()
     done = payment.info_data
