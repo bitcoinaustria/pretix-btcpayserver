@@ -232,23 +232,23 @@ class BTCPayServer(BasePaymentProvider):
         return d
 
     def check_connection_change(self, **changes):
-        # Compared with the stored connection, not the one this form was loaded with: a form opened before someone
-        # else changed server or store looks unchanged to itself and would write the old connection back. Shared
-        # until the settings are saved, so no other change can be saved in between; checkouts are not held up.
-        try:
-            hold_connection(self.event.pk, shared=True, wait=20)
-        except Busy:
-            raise ValidationError(_("The payment settings are being changed. Please try again in a minute."))
         self.event.settings.flush()
         origin = invoice_origin(self)
-        if self.settings.store_id and not same_origin(origin, {**origin, **changes}):
+        moved = not same_origin(origin, {**origin, **changes})
+        # Unchanged forms also hold the connection: webhook registration refreshes their settings cache, so saving
+        # an older form afterwards could restore its connection. Writers must wait until that form commits.
+        try:
+            hold_connection(self.event.pk, shared=not moved, wait=20)
+        except Busy:
+            raise ValidationError(_("Payments are being started right now. Please save again in a minute."))
+        # Another settings request may have committed between the first read and taking this lock.
+        self.event.settings.flush()
+        if not same_origin(origin, invoice_origin(self)):
+            raise ValidationError(_("The payment settings were just changed. Please try again."))
+        if self.settings.store_id and moved:
             # Invoices are read from the configured store only: after a switch, money on an open invoice of the old
             # one would never be booked, and its seats would be sold again. Held until the settings are saved, so no
             # checkout creates an invoice with the old connection after this count.
-            try:
-                hold_connection(self.event.pk, shared=False, wait=20)
-            except Busy:
-                raise ValidationError(_("Payments are being started right now. Please save again in a minute."))
             at = now()
             open_ = sum(1 for p in OrderPayment.objects.filter(order__event=self.event, provider=self.identifier)
                         .exclude(info__isnull=True).exclude(info="") if still_open(p, at))
