@@ -232,6 +232,14 @@ class BTCPayServer(BasePaymentProvider):
         return d
 
     def check_connection_change(self, **changes):
+        # Compared with the stored connection, not the one this form was loaded with: a form opened before someone
+        # else changed server or store looks unchanged to itself and would write the old connection back. Shared
+        # until the settings are saved, so no other change can be saved in between; checkouts are not held up.
+        try:
+            hold_connection(self.event.pk, shared=True, wait=20)
+        except Busy:
+            raise ValidationError(_("The payment settings are being changed. Please try again in a minute."))
+        self.event.settings.flush()
         origin = invoice_origin(self)
         if self.settings.store_id and not same_origin(origin, {**origin, **changes}):
             # Invoices are read from the configured store only: after a switch, money on an open invoice of the old
