@@ -358,12 +358,6 @@ class BTCPayServer(BasePaymentProvider):
                     hold_connection(self.event.pk, shared=True, wait=10)
                 except Busy:
                     raise PaymentException(_("The payment settings are being changed. Please try again in a minute."))
-                prefix = f"payment_{self.identifier}_"
-                stored = dict(self.event._settings_objects.filter(
-                    key__in=[prefix + "url", prefix + "store_id"]).values_list("key", "value"))
-                if not same_origin(invoice_origin(self), {"server": stored.get(prefix + "url"),
-                                                          "store_id": stored.get(prefix + "store_id")}):
-                    raise PaymentException(_("The payment settings were just changed. Please try again."))
                 locked = OrderPayment.objects.select_for_update(of=OF_SELF).get(pk=payment.pk)
                 info = locked.info_data
                 if info.get("invoice_id"):
@@ -381,6 +375,13 @@ class BTCPayServer(BasePaymentProvider):
                         raise PaymentException(_("This payment has expired. Please start the payment again."))
                 if locked.state != OrderPayment.PAYMENT_STATE_CREATED:
                     raise PaymentException(_("This payment can not be continued. Please start the payment again."))
+                # Settings read before the lock may be the ones a change just replaced.
+                prefix = f"payment_{self.identifier}_"
+                stored = dict(self.event._settings_objects.filter(
+                    key__in=[prefix + "url", prefix + "store_id"]).values_list("key", "value"))
+                if not same_origin(invoice_origin(self), {"server": stored.get(prefix + "url"),
+                                                          "store_id": stored.get(prefix + "store_id")}):
+                    raise PaymentException(_("The payment settings were just changed. Please try again."))
                 order = payment.order
                 invoice = self.client.create_invoice(
                     str(self.settings.store_id),
