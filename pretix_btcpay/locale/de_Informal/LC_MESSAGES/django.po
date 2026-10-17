@@ -272,3 +272,9 @@ msgstr "Du zahlst in Bitcoin, über das Lightning Network oder on-chain. Nach de
 
 msgid "After you submit your order, you are taken to the payment page, where you can pay over the Lightning Network or on-chain. Your order is paid as soon as the payment is confirmed."
 msgstr "Nach dem Bestellen kommst du zur Zahlungsseite; dort zahlst du über das Lightning Network oder on-chain. Bezahlt ist deine Bestellung, sobald die Zahlung bestätigt ist."
+
+msgid "Complete payment"
+msgstr "Zahlung vervollständigen"
+
+msgid "Your payment has arrived, but not the full amount yet — it may have been replaced with a cheaper transaction. Please complete the payment: the remaining amount is shown on the payment page."
+msgstr "Deine Zahlung ist angekommen, aber noch nicht der volle Betrag. Vielleicht wurde sie durch eine günstigere Transaktion ersetzt. Bitte vervollständige die Zahlung: Der Restbetrag steht auf der Zahlungsseite."
