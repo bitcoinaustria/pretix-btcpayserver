@@ -107,11 +107,19 @@ class BTCPayAPI:
         })
 
     def get_invoice(self, store_id: str, invoice_id: str) -> dict[str, Any]:
-        return self._object("GET", f"/api/v1/stores/{_segment(store_id)}/invoices/{_segment(invoice_id)}")
+        invoice = self._object("GET", f"/api/v1/stores/{_segment(store_id)}/invoices/{_segment(invoice_id)}")
+        # Both webhook and poll read metadata as an object. An unexpected upstream shape must follow
+        # their retry path, rather than crash a delivery or abort the entire poll.
+        if invoice.get("metadata") is not None and not isinstance(invoice["metadata"], dict):
+            raise BTCPayError("Unexpected response from payment provider.")
+        return invoice
 
     def get_invoice_payment_methods(self, store_id: str, invoice_id: str) -> list[dict[str, Any]]:
         data = self._request("GET", f"/api/v1/stores/{_segment(store_id)}/invoices/{_segment(invoice_id)}/payment-methods")
-        if not isinstance(data, list):
+        if not isinstance(data, list) or any(not isinstance(method, dict) for method in data):
+            raise BTCPayError("Unexpected response from payment provider.")
+        if any(not isinstance(method.get("payments") or [], list)
+               or any(not isinstance(payment, dict) for payment in method.get("payments") or []) for method in data):
             raise BTCPayError("Unexpected response from payment provider.")
         return data
 
@@ -128,7 +136,7 @@ class BTCPayAPI:
 
     def list_webhooks(self, store_id: str) -> list[dict[str, Any]]:
         data = self._request("GET", f"/api/v1/stores/{_segment(store_id)}/webhooks")
-        if not isinstance(data, list):
+        if not isinstance(data, list) or any(not isinstance(webhook, dict) for webhook in data):
             raise BTCPayError("Unexpected response from payment provider.")
         return data
 

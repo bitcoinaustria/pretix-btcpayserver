@@ -103,6 +103,28 @@ class SurfaceChecks(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.client.get_invoice.assert_not_called()
 
+    def test_malformed_invoice_metadata_returns_retryable_response(self):
+        body = b'{"type":"InvoiceSettled","invoiceId":"X","storeId":"REVIEW"}'
+        self.provider.__dict__['client'] = BTCPayAPI('https://pay.example.org', 'test-key')
+        for metadata in ([], ['bad'], 'bad', 12):
+            with self.subTest(metadata=metadata), patch.object(BTCPayAPI, '_request', return_value={'metadata': metadata}):
+                with patch.object(views, '_provider', return_value=self.provider):
+                    response = views.webhook(self.signed_request(body))
+                self.assertEqual(response.status_code, 503)
+
+    def test_malformed_api_lists_raise_provider_error(self):
+        client = BTCPayAPI('https://pay.example.org', 'test-key')
+        for data in ([None], ['bad'], [12]):
+            with self.subTest(data=data), patch.object(client, '_request', return_value=data):
+                for call in (lambda: client.list_webhooks('REVIEW'),
+                             lambda: client.get_invoice_payment_methods('REVIEW', 'X')):
+                    with self.assertRaises(BTCPayError):
+                        call()
+        for data in ([{'payments': 'bad'}], [{'payments': [None]}], [{'payments': [1]}]):
+            with self.subTest(data=data), patch.object(client, '_request', return_value=data):
+                with self.assertRaises(BTCPayError):
+                    client.get_invoice_payment_methods('REVIEW', 'X')
+
     def test_signature_is_verified_before_json_and_api(self):
         request = self.signed_request(b'{')
         request.META['HTTP_BTCPAY_SIG'] = 'sha256=forged'
