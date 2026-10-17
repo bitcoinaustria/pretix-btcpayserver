@@ -1,0 +1,68 @@
+name: CI
+
+# Tests on every push and pull request. A tag v<version> also builds the wheel and sdist, installs the wheel into the
+# pretix image we test against and publishes both files as a GitHub release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m unittest discover -s tests -t . -v
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: python -m pip install build==1.3.0
+      - run: python -m build
+      - name: Check version and package contents
+        run: python tools/check_dist.py dist "${GITHUB_REF_NAME}"
+      - name: Install into pretix 2026.7.0
+        run: |
+          docker run --rm -u root -v "$PWD/dist:/dist:ro" --entrypoint sh pretix/standalone:2026.7.0 -ec '
+            pip3 install --no-cache-dir --no-deps /dist/*.whl
+            cd /pretix/src
+            python3 -c "import pretix_btcpay; print(\"pretix-btcpayserver\", pretix_btcpay.__version__)"
+            python3 -m pretix check
+            python3 -c "import django; django.setup(); import pretix_btcpay.payment, pretix_btcpay.views, pretix_btcpay.signals, pretix_btcpay.sync"
+          '
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

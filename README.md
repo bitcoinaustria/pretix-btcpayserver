@@ -20,11 +20,13 @@ has since been rewritten; see [Changes from the original plugin](#changes-from-t
 
 ## Install
 
-Install the reviewed checkout into the same Python environment as pretix, then rebuild and restart the web and
-worker processes. Pin the commit you deploy; `pretix-btcpayserver` on PyPI is the original plugin, not this one.
+Install a release into the same Python environment as pretix, then rebuild and restart the web and worker
+processes. Each [release](https://github.com/bitcoinaustria/pretix-btcpayserver/releases) has a wheel and an sdist,
+built and installed into pretix 2026.7.0 by CI from the tagged commit. The plugin is not on PyPI. A reviewed checkout
+installs the same way; pin the release or commit you deploy.
 
 ```bash
-python -m pip install /path/to/reviewed/pretix-btcpayserver
+python -m pip install https://github.com/bitcoinaustria/pretix-btcpayserver/releases/download/v0.2.0/pretix_btcpayserver-0.2.0-py3-none-any.whl
 python -m pretix migrate
 python -m pretix rebuild
 # Restart your pretix web and worker services, then enable the plugin for the event.
@@ -186,6 +188,7 @@ Accepted for the Bitcoin Zitadelle, and worth knowing before you rely on the plu
 
 ```bash
 python -m unittest discover -s tests -t .                  # the state machine and the security checks, without pretix
+python -m build && python tools/check_dist.py dist          # the release files, as CI builds them
 docker exec -i <pretix container> pretix shell < tests/pretix_checks.py   # sync against a real pretix, fake invoices
 docker exec -i -e CHECK_EVENT=<organizer>/<test-event> <pretix container> pretix shell < tests/pretix_regressions.py
 docker exec -i -e CHECK_EVENT=<organizer>/<test-event> <pretix container> pretix shell < tests/pretix_surface.py
@@ -214,6 +217,13 @@ leaving checkouts concurrent; they delete their temporary events without changin
 End-to-end tests on regtest (on-chain, Lightning, expiry, partial, over and late payments, double spends,
 switched payment methods, lost webhooks, forged webhooks, refunds, a rush of buyers) live in the Bitcoin Zitadelle
 website repository (`scripts/pretix-e2e-bitcoin.mjs`, run with `PRETIX_BTCPAY=greenfield`).
+
+## Releases
+
+Set the new version in `setup.py` and `pretix_btcpay/__init__.py`, merge to `main`, then tag that commit and push the
+tag (`git tag v0.2.0 && git push origin v0.2.0`). CI runs the tests, builds the wheel and sdist, checks that the
+version matches the tag and that templates and translations are inside, installs the wheel into pretix 2026.7.0 and
+publishes both files as a GitHub release. Run the live checks above and the end-to-end tests before tagging.
 
 ## Changes from the original plugin
 
