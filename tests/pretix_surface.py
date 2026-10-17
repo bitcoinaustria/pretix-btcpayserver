@@ -164,14 +164,20 @@ class SurfaceChecks(unittest.TestCase):
     def test_store_switch_guard_uses_the_invoice_state_and_monitoring_deadline(self):
         self.isolate_event()
         at = now()
-        for status, payment_state, monitoring_hours, blocked in (
-                ('New', 'created', 1, True), ('Processing', 'pending', 1, True),
-                ('Settled', 'failed', -1, True), ('Settled', 'canceled', -1, True),
-                ('Expired', 'failed', 1, True), ('Expired', 'failed', -1, False),
-                ('Invalid', 'failed', 1, False), ('Settled', 'confirmed', 1, False)):
-            with self.subTest(status=status, payment_state=payment_state, monitoring_hours=monitoring_hours):
+        for status, payment_state, monitoring_hours, order_paid, blocked in (
+                ('New', 'created', 1, False, True), ('Processing', 'pending', 1, False, True),
+                ('Settled', 'failed', -1, False, True), ('Settled', 'canceled', -1, False, True),
+                ('Expired', 'failed', 1, False, True), ('Expired', 'failed', -1, False, False),
+                ('Invalid', 'failed', 1, False, False), ('Settled', 'confirmed', 1, True, False),
+                # Confirmed, but the order is not marked paid yet: reconciliation still has to finish it.
+                ('Settled', 'confirmed', 1, False, True)):
+            with self.subTest(status=status, payment_state=payment_state, monitoring_hours=monitoring_hours,
+                              order_paid=order_paid):
                 payment = self.make_payment({'invoice_id': 'EXISTING', 'status': status,
                     'monitoring_until': int((at + timedelta(hours=monitoring_hours)).timestamp())}, state=payment_state)
+                if order_paid:
+                    Order.objects.filter(pk=payment.order_id).update(status=Order.STATUS_PAID)
+                    payment.refresh_from_db()
                 with patch.object(self.provider, 'ensure_webhook'), override('en'):
                     if blocked:
                         with self.assertRaisesRegex(ValidationError, 'BTCPay invoices of this event'):
