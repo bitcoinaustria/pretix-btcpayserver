@@ -25,7 +25,7 @@ from pretix.multidomain.urlreverse import eventreverse, eventreverse_absolute
 
 from . import state
 from .api import BTCPayAPI, BTCPayError, WEBHOOK_EVENTS, is_own_link, missing_permissions
-from .locks import WEBHOOK, advisory_lock
+from .locks import WEBHOOK, Busy, advisory_lock, hold_connection
 from .sync import PROVIDER, OrderBusy, event_ref, invoice_origin, is_surplus, same_origin, still_open, sync_payment
 
 logger = logging.getLogger(__name__)
@@ -235,7 +235,12 @@ class BTCPayServer(BasePaymentProvider):
         origin = invoice_origin(self)
         if self.settings.store_id and not same_origin(origin, {**origin, **changes}):
             # Invoices are read from the configured store only: after a switch, money on an open invoice of the old
-            # one would never be booked, and its seats would be sold again.
+            # one would never be booked, and its seats would be sold again. Held until the settings are saved, so no
+            # checkout creates an invoice with the old connection after this count.
+            try:
+                hold_connection(self.event.pk, shared=False, wait=20)
+            except Busy:
+                raise ValidationError(_("Payments are being started right now. Please save again in a minute."))
             at = now()
             open_ = sum(1 for p in OrderPayment.objects.filter(order__event=self.event, provider=self.identifier)
                         .exclude(info__isnull=True).exclude(info="") if still_open(p, at))
@@ -347,6 +352,18 @@ class BTCPayServer(BasePaymentProvider):
                 except OrderBusy:
                     pass  # a webhook is applying it right now; the state below is read fresh
             with transaction.atomic():
+                # Shared with other checkouts, until the invoice is stored: a change of server or store waits for it
+                # and then counts it as open; one being saved right now makes this wait, then try again.
+                try:
+                    hold_connection(self.event.pk, shared=True, wait=10)
+                except Busy:
+                    raise PaymentException(_("The payment settings are being changed. Please try again in a minute."))
+                prefix = f"payment_{self.identifier}_"
+                stored = dict(self.event._settings_objects.filter(
+                    key__in=[prefix + "url", prefix + "store_id"]).values_list("key", "value"))
+                if not same_origin(invoice_origin(self), {"server": stored.get(prefix + "url"),
+                                                          "store_id": stored.get(prefix + "store_id")}):
+                    raise PaymentException(_("The payment settings were just changed. Please try again."))
                 locked = OrderPayment.objects.select_for_update(of=OF_SELF).get(pk=payment.pk)
                 info = locked.info_data
                 if info.get("invoice_id"):
