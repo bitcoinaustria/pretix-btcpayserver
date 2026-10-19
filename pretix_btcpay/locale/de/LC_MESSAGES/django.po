@@ -293,3 +293,12 @@ msgstr "Die Zahlungseinstellungen werden gerade geändert. Bitte versuchen Sie e
 
 msgid "The payment settings were just changed. Please try again."
 msgstr "Die Zahlungseinstellungen wurden gerade geändert. Bitte versuchen Sie es noch einmal."
+
+msgid "Organizer-funded Bitcoin discount (%)"
+msgstr "Bitcoin-Rabatt des Veranstalters (%)"
+
+msgid "Optional discount for Bitcoin payments, including Lightning. Applied to the amount payable with this payment method after product discounts and vouchers, before payment fees. 0 or empty disables it. Any configured payment fees still apply. Rounding will leave at least one smallest currency unit payable."
+msgstr "Optionaler Rabatt für Bitcoin-Zahlungen einschließlich Lightning. Er gilt für den mit dieser Zahlungsart zu zahlenden Betrag nach Produktrabatten und Gutscheinen, vor Zahlungsgebühren. 0 oder leer deaktiviert ihn. Eingestellte Zahlungsgebühren gelten weiterhin. Nach Rundung bleibt mindestens die kleinste Währungseinheit zu zahlen."
+
+msgid "The organizer gives you a %(percent)s%% discount for paying with Bitcoin, including Lightning. The discount is included in your total; any configured payment fees still apply."
+msgstr "Der Veranstalter gewährt Ihnen %(percent)s%% Rabatt für Bitcoin-Zahlungen einschließlich Lightning. Der Rabatt ist im Gesamtbetrag enthalten; eingestellte Zahlungsgebühren gelten weiterhin."
