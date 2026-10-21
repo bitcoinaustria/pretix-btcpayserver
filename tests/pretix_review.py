@@ -165,6 +165,7 @@ class ManualReviewIntegration(ManualReviewFixtures, TestCase):
         self.assertNotIn('held_from', payment.info_data)
 
     def test_native_denial_is_never_reopened_by_replay_or_settlement(self):
+        self.event.settings.set('payment_term_accept_late', True)
         order, payment = self.order()
         self.apply(payment, state.INVALID)
         order.refresh_from_db()
@@ -172,6 +173,25 @@ class ManualReviewIntegration(ManualReviewFixtures, TestCase):
         self.apply(payment, state.INVALID)
         self.apply(payment, state.SETTLED)
         self.assertEqual(payment.order.status, Order.STATUS_CANCELED)
+        self.assertEqual(payment.state, 'confirmed')
+        self.assertFalse(payment.order.ticket_download_available)
+        self.assertFalse(order.all_logentries().filter(action_type='pretix.event.order.paid').exists())
+
+    def test_canceled_order_without_approval_is_not_reopened_by_late_funds(self):
+        self.event.settings.set('payment_term_accept_late', True)
+        order, payment = self.order()
+        self.apply(payment, state.INVALID)
+        # Exercise the worst case independently of require_approval: cancellation alone must prevent fulfillment.
+        Order.objects.filter(pk=order.pk).update(status=Order.STATUS_CANCELED, require_approval=False)
+        self.apply(payment, state.SETTLED)
+        self.apply(payment, state.SETTLED)
+        self.assertEqual(payment.order.status, Order.STATUS_CANCELED)
+        self.assertFalse(payment.order.require_approval)
+        self.assertEqual(payment.state, 'confirmed')
+        self.assertFalse(payment.info_data['review_required'])
+        self.assertFalse(payment.order.ticket_download_available)
+        self.assertFalse(order.all_logentries().filter(action_type='pretix.event.order.paid').exists())
+        self.assertEqual(order.all_logentries().filter(action_type='pretix.event.order.payment.confirmed').count(), 1)
 
     def test_settlement_releases_our_hold_but_never_an_unrelated_approval(self):
         order, payment = self.order()

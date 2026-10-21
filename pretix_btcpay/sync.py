@@ -454,6 +454,8 @@ def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
             payment.refresh_from_db()
             payment.order = order
             try:
+                # Native confirm() records funds but returns before fulfillment for canceled orders, even when
+                # late payments are enabled. _catch_up_order independently excludes canceled orders as well.
                 payment.confirm()
             except Quota.QuotaExceededException as e:
                 review.after_settlement(order, payments, released_review)
