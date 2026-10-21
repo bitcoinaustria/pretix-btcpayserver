@@ -1,4 +1,7 @@
 {% load i18n %}
+{% if info.review_required and payment.order.require_approval and payment.order.status == "n" %}
+    <div class="alert alert-warning">{% trans "Payment under review. Places remain reserved. Check the transaction before approving or denying this order." %}</div>
+{% endif %}
 {% if info.surplus_of %}
     <p>{% trans "Money beyond the amount of another BTCPay payment of this order, on the same invoice:" %} {{ info.invoice_id }}</p>
 {% elif info.invoice_id %}

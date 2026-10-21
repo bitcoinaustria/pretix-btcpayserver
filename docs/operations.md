@@ -43,6 +43,37 @@ invoice. A fully paid invoice settles only after its policy's confirmations. BTC
 after expiration as `Expired` / `PaidLate`; a human must review it. BTCPay's term “paid” in some screens does not mean
 pretix has confirmed the payment. See [invoice states](https://docs.btcpayserver.org/Users/invoices/).
 
+## Optional manual review
+
+The event setting **Hold received payments for manual review** is opt-in. It preserves the existing finite
+confirmation hold for normal payments. Partial receipts also extend the deadline through invoice monitoring.
+Once a received/previously observed payment becomes `Invalid` or `Expired`, the plugin sets pretix's native
+`require_approval` on a pending order. Approval orders keep quota even after their deadline and do not auto-expire;
+`valid_if_pending` is never set. No unpaid tickets are enabled. An expired order is first restored using pretix's
+normal quota check, never `force`; failure raises an attention notification instead of claiming the places exist.
+
+The buyer sees: **Payment under review. Your places remain reserved. Do not pay again.** This appears only while
+an actual pending-approval hold is present. Normal processing uses the existing pending view, without a ten-minute
+confirmation estimate. The team gets a follow-up date and payment history note. Subscribe each responsible
+operator to the BTCPay warning types in their user notification settings and verify email delivery with SMTP;
+registering a type alone does not subscribe or email anyone.
+
+In the native backend, **Approve** resolves the hold and starts a normal payment deadline; it does not assert
+receipt of Bitcoin. **Deny** cancels the order and does not refund money. Verify funds/refunds before either action.
+A verified `Settled` invoice that covers the current order balance can finish the order automatically; only an
+approval requirement introduced by this plugin is removed, and only after pretix accepts finalization. If native
+date or quota policy refuses it (including `payment_term_last`), confirmed funds are recorded but the approval
+hold and reservation remain. Resolve the native restriction explicitly; an elapsed deadline is not called a
+quota failure. A separate existing approval requirement stays put.
+Replays do not re-arm a manually resolved hold. Turning the option off does not release existing review holds.
+Native settings remain authoritative; manually shortening an ordinary, still-processing order can defeat its
+finite confirmation hold until the next successful reconciliation.
+
+No database schema migration, new secrets, wallet signing access or payment sending is required. Deploy the same
+reviewed artifact to web, workers and cron, test on an isolated event, then enable it explicitly for the intended
+event. Include: no funds expiring; slow full and partial payments; invalidation after receipt; native approve/deny;
+late settlement; an expired sold-out order; missing webhook recovery; and permission-scoped notification delivery.
+
 ## Delivery and recovery
 
 Run pretix cron regularly and keep its background worker processing tasks. The poll's minimum interval is one minute,

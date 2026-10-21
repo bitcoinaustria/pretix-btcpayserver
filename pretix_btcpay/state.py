@@ -146,3 +146,8 @@ def hold_until(monitoring_expiration: datetime | None, now: datetime, fallback: 
 
 
 SPEED_POLICIES = ("MediumSpeed", "LowMediumSpeed", "LowSpeed")
+
+
+def needs_manual_review(status: str | None, *, seen: bool, paid: bool) -> bool:
+    """A closed invoice with current or previously observed funds needs a human, not automatic release."""
+    return status in (EXPIRED, INVALID) and (seen or paid)

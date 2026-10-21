@@ -63,7 +63,7 @@ jobs:
         with:
           name: dist
           path: dist
-      - name: Check subsidy through pretix orders and invoices
+      - name: Check pricing and manual review through pretix orders and invoices
         run: |
           docker run --rm --network none --memory 1536m --cpus 2 --tmpfs /data:rw,mode=1777 \
             -u root -v "$PWD:/plugin:ro" -w /tmp \
@@ -74,12 +74,51 @@ jobs:
               mkdir /tmp/test-runner
               cp -r /plugin/tests /tmp/test-runner/tests
               cd /tmp/test-runner
-              python3 -m django test tests.pretix_subsidy --noinput
+              python3 -m django test tests.pretix_subsidy tests.pretix_review --noinput
+            '
+
+  review-postgres:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pretix: ["2026.7.0", "2026.8.0"]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: review_fixture
+          POSTGRES_USER: review_fixture
+          # Disposable runner-only database. No reusable credentials; reachable only over runner loopback.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["127.0.0.1:5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U review_fixture"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: Check native approval and settlement with PostgreSQL locks
+        run: |
+          docker run --rm --network host --memory 1536m --cpus 2 --tmpfs /data:rw,mode=1777 \
+            -u root -v "$PWD:/plugin:ro" -w /tmp \
+            -e DATA_DIR=/data -e PRETIX_REVIEW_POSTGRES=1 \
+            -e PRETIX_DIRTY_TRANSACTIONS_QUIET=false \
+            -e DJANGO_SETTINGS_MODULE=tests.pretix_test_settings \
+            --entrypoint sh pretix/standalone:${{ matrix.pretix }} -ec '
+              pip3 install --no-cache-dir --no-deps /plugin/dist/*.whl
+              mkdir /tmp/test-runner
+              cp -r /plugin/tests /tmp/test-runner/tests
+              cd /tmp/test-runner
+              python3 -m django test tests.pretix_review --noinput
             '
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, subsidy]
+    needs: [build, subsidy, review-postgres]
     runs-on: ubuntu-latest
     permissions:
       contents: write

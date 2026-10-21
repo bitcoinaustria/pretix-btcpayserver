@@ -28,7 +28,7 @@ from pretix.base.services.locking import LockTimeoutException
 from pretix.base.services.orders import OrderError, extend_order
 from pretix.helpers.database import OF_SELF
 
-from . import state
+from . import review, state
 from .api import BTCPayError
 from .checks import _effective_port
 from .locks import ORDER, advisory_lock
@@ -193,6 +193,8 @@ def _release_hold(payment: OrderPayment) -> None:
     a few minutes to pay again, instead of holding the seats for a day.
     """
     with _order_rows(payment.order_id) as (order, payments):
+        if any(p.provider == PROVIDER and p.info_data.get("review_required") for p in payments.values()) and order.require_approval:
+            return  # a human, or verified settlement, must resolve the approval hold
         held = []
         for other in payments.values():
             info = other.info_data if other.provider == PROVIDER else {}
@@ -282,6 +284,8 @@ def _catch_up_order(payment: OrderPayment, invoice: dict) -> None:
             net = _net_paid(order)
             if order.status not in (Order.STATUS_PENDING, Order.STATUS_EXPIRED) or net < order.total:
                 return
+            if order.require_approval:
+                return  # a genuine native approval requirement is not a quota failure
             locked = payments[payment.pk]
             locked.order = order
             locked._mark_order_paid(payment_refund_sum=net)
@@ -405,10 +409,18 @@ def apply(provider, payment: OrderPayment, invoice: dict, source: str, wait: flo
 
 
 def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
+    previous = payment.info_data.copy()
     paid = _decimal(invoice.get("paidAmount"))
     _update_info(payment, status=invoice.get("status"), additional_status=invoice.get("additionalStatus"),
                  paid_amount=str(paid), monitoring_until=invoice.get("monitoringExpiration"), checked=int(time.time()))
+    review.track(provider, payment, invoice, previous)
+    held_for_review = review.hold(provider, payment, invoice)
     decision = state.decide(invoice.get("status"), invoice.get("additionalStatus"), payment.state, paid=paid > 0)
+    if held_for_review and invoice.get("status") != state.SETTLED:
+        return "review"
+    if (getattr(provider, "manual_review", False) and invoice.get("status") == state.NEW and paid > 0
+            and not payment.info_data.get("review_resolved")):
+        _hold_order(payment, invoice)  # a partial receipt is still real money; let the buyer complete the same invoice
     for note in decision.notes:
         if note != state.NOTE_OVERPAID:  # booked with its amount below
             _note(payment, note, invoice, key=str(paid))  # again when more money arrives
@@ -438,13 +450,23 @@ def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
             # only if this payment is not confirmed yet: someone in the backend may have confirmed it meanwhile.
             paid_before = (payments[payment.pk].state != OrderPayment.PAYMENT_STATE_CONFIRMED
                            and order.status == Order.STATUS_PAID and _net_paid(order) >= order.total)
+            released_review = review.before_settlement(order, payments, payments[payment.pk])
+            payment.refresh_from_db()
+            payment.order = order
             try:
+                # Native confirm() records funds but returns before fulfillment for canceled orders, even when
+                # late payments are enabled. _catch_up_order independently excludes canceled orders as well.
                 payment.confirm()
             except Quota.QuotaExceededException as e:
+                review.after_settlement(order, payments, released_review)
+                if order.require_approval:
+                    return "confirm"  # an unrelated native approval requirement must never be bypassed or called sold out
                 # The payment counts, the order could not be marked paid (seats gone after it expired).
                 logger.warning("BTCPay: payment %s confirmed but order not paid: %s", payment.full_id, e)
                 _update_info(payment, quota_exceeded=True)
                 _note(payment, "quota_exceeded", invoice)
+            else:
+                review.after_settlement(order, payments, released_review)
             if paid_before:
                 # The buyer paid a second invoice of an order another payment had already paid (two tabs, a switched
                 # payment method). The money counts and pretix shows the order as overpaid; someone has to refund
@@ -500,7 +522,8 @@ def still_open(payment: OrderPayment, at: datetime) -> bool:
                 or (payment.order.status in (Order.STATUS_PENDING, Order.STATUS_EXPIRED)
                     and not info.get("quota_exceeded"))):
             return True
-    return (payment.state in (OrderPayment.PAYMENT_STATE_CREATED, OrderPayment.PAYMENT_STATE_PENDING)
+    return (bool(info.get("review_required"))
+            or payment.state in (OrderPayment.PAYMENT_STATE_CREATED, OrderPayment.PAYMENT_STATE_PENDING)
             or not state.is_final(info.get("status"), _timestamp(info.get("monitoring_until")), at)
             or (info.get("status") == state.SETTLED and not counted))
 
@@ -531,6 +554,8 @@ def next_check(payment: OrderPayment, at: datetime) -> float | None:
     status = info.get("status")
     monitoring = _timestamp(info.get("monitoring_until"))
     counted = payment.state in (OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED)
+    if info.get("review_required"):
+        return checked + WATCH  # unresolved manual cases remain observable, without a per-minute closed-invoice loop
     if (info.get("held_from") and not counted and payment.order.status == Order.STATUS_PENDING
             and status in (state.EXPIRED, state.INVALID)):
         return checked + ACTIVE  # a sibling may still need the hold, or row contention prevented releasing it
@@ -572,7 +597,7 @@ def poll(budget: int = 300, seconds: float = 45) -> dict:
     # Unfinished work does not age out: a settled invoice pretix has not counted, or whose order it has not marked
     # paid. pretix stores info as JSON with sorted keys and the default separators.
     settled = Q(info__contains='"status": "Settled"')
-    unfinished = settled & (~Q(state__in=(OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED))
+    unfinished = Q(info__contains='"review_required": true') | settled & (~Q(state__in=(OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED))
                             | Q(order__status__in=(Order.STATUS_PENDING, Order.STATUS_EXPIRED))
                             | Q(info__contains='"surplus_open": true'))
     with scopes_disabled():

@@ -302,3 +302,60 @@ msgstr "Optionaler Rabatt für Bitcoin-Zahlungen einschließlich Lightning. Er g
 
 msgid "The organizer gives you a %(percent)s%% discount for paying with Bitcoin, including Lightning. The discount is included in your total; any configured payment fees still apply."
 msgstr "Der Veranstalter gewährt Ihnen %(percent)s%% Rabatt für Bitcoin-Zahlungen einschließlich Lightning. Der Rabatt ist im Gesamtbetrag enthalten; eingestellte Zahlungsgebühren gelten weiterhin."
+
+msgid "Hold received payments for manual review"
+msgstr "Eingegangene Zahlungen zur manuellen Prüfung reserviert halten"
+
+msgid "If an invoice with detected funds expires or becomes invalid, keep its order pending approval. Unpaid orders still expire normally. Subscribe to BTCPay payment warnings in your notification settings. Turning this off does not release existing holds."
+msgstr "Läuft eine Rechnung mit erkanntem Geldeingang ab oder wird sie ungültig, bleibt die Bestellung bis zur Freigabe reserviert. Ohne Geldeingang läuft sie normal ab. BTCPay-Zahlungswarnungen in den Benachrichtigungseinstellungen abonnieren. Ausschalten gibt bestehende Reservierungen nicht frei."
+
+msgid "Payment requires manual review. The order remains reserved pending approval."
+msgstr "Zahlung manuell prüfen. Die Bestellung bleibt bis zur Freigabe reserviert."
+
+msgid "Confirmed funds cover the order. The payment review hold was released."
+msgstr "Die bestätigte Zahlung deckt die Bestellung. Die manuelle Prüfung wurde aufgehoben."
+
+msgid "Payment is still unconfirmed after 2 hours."
+msgstr "Zahlung nach 2 Stunden noch unbestätigt."
+
+msgid "Payment is still unconfirmed after 24 hours."
+msgstr "Zahlung nach 24 Stunden noch unbestätigt."
+
+msgid "BTCPay payment warnings"
+msgstr "BTCPay-Zahlungswarnungen"
+
+msgid "Order {code}: payment requires manual review."
+msgstr "Bestellung {code}: Zahlung manuell prüfen."
+
+msgid "Order {code}: payment unconfirmed for 2 hours."
+msgstr "Bestellung {code}: Zahlung seit 2 Stunden unbestätigt."
+
+msgid "Order {code}: payment unconfirmed for 24 hours."
+msgstr "Bestellung {code}: Zahlung seit 24 Stunden unbestätigt."
+
+msgid "Order {code}: payment reservation could not be kept."
+msgstr "Bestellung {code}: Reservierung zur Zahlung konnte nicht gehalten werden."
+
+msgid "View order"
+msgstr "Bestellung ansehen"
+
+msgid "Payment under review. Your places remain reserved. Do not pay again."
+msgstr "Zahlung wird geprüft. Ihre Plätze bleiben reserviert. Nicht erneut bezahlen."
+
+msgid "Payment under review. Places remain reserved. Check the transaction before approving or denying this order."
+msgstr "Zahlung wird geprüft. Plätze bleiben reserviert. Transaktion vor Freigabe oder Ablehnung dieser Bestellung prüfen."
+
+msgid "Payment detected. Waiting for confirmation by the Bitcoin network. Your order remains reserved until its payment deadline."
+msgstr "Zahlung erkannt. Bestätigung im Bitcoin-Netz ausstehend. Ihre Bestellung bleibt bis zur Zahlungsfrist reserviert."
+
+msgid "BTCPay: manual review required"
+msgstr "BTCPay: manuelle Prüfung erforderlich"
+
+msgid "BTCPay: unconfirmed for 2 hours"
+msgstr "BTCPay: seit 2 Stunden unbestätigt"
+
+msgid "BTCPay: unconfirmed for 24 hours"
+msgstr "BTCPay: seit 24 Stunden unbestätigt"
+
+msgid "BTCPay: reservation failed"
+msgstr "BTCPay: Reservierung fehlgeschlagen"
