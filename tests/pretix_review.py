@@ -40,6 +40,7 @@ class ManualReviewFixtures:
         self.quota = Quota.objects.create(event=self.event, name='One place', size=1)
         self.quota.items.add(self.item)
 
+    @transaction.atomic
     def order(self):
         cart = CartPosition.objects.create(event=self.event, item=self.item, price=Decimal('100'), tax_rate=Decimal('0'),
                                            tax_value=Decimal('0'), cart_id='review', expires=now() + timedelta(minutes=5))
