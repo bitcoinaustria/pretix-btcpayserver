@@ -42,8 +42,8 @@ class ManualReviewIntegration(TestCase):
         self.quota.items.add(self.item)
 
     def order(self):
-        cart = CartPosition.objects.create(event=self.event, item=self.item, price=Decimal('100'), tax_rate=0,
-                                           tax_value=0, cart_id='review', expires=now() + timedelta(minutes=5))
+        cart = CartPosition.objects.create(event=self.event, item=self.item, price=Decimal('100'), tax_rate=Decimal('0'),
+                                           tax_value=Decimal('0'), cart_id='review', expires=now() + timedelta(minutes=5))
         order, payments = _create_order(self.event, email=None, positions=[cart], now_dt=now(),
                                          payment_requests=[{'provider': self.provider.identifier,
                                                             'pprov': self.provider, 'info_data': {}}],
