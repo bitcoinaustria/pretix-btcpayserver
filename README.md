@@ -108,8 +108,8 @@ The team sees a follow-up due today and **Payment under review** in the order's 
 **Approve** action only after deciding how to finish the payment; this ends the manual hold, starts pretix's normal
 payment deadline, and is not payment confirmation. Use **Deny** after resolving any received funds if the order
 will not be fulfilled. A later invoice replay cannot re-arm an approved hold or reopen a denied order. Confirmed
-funds covering the full current order total automatically release an approval hold created by this plugin and pay
-the order. Approval requirements that existed beforehand are never removed automatically.
+funds covering the full current order total release an approval hold created by this plugin only when pretix
+successfully marks the order paid. If native date or quota policy refuses settlement, the hold remains for review. Approval requirements that existed beforehand are never removed automatically.
 
 Subscribe to the plugin's **BTCPay payment warnings** in pretix's user notification preferences: warnings are
 registered for 2 and 24 hours without settlement, entry into manual review, and a failed quota hold. Select email

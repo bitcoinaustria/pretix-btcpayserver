@@ -61,7 +61,10 @@ registering a type alone does not subscribe or email anyone.
 In the native backend, **Approve** resolves the hold and starts a normal payment deadline; it does not assert
 receipt of Bitcoin. **Deny** cancels the order and does not refund money. Verify funds/refunds before either action.
 A verified `Settled` invoice that covers the current order balance can finish the order automatically; only an
-approval requirement introduced by this plugin is removed. A separate existing approval requirement stays put.
+approval requirement introduced by this plugin is removed, and only after pretix accepts finalization. If native
+date or quota policy refuses it (including `payment_term_last`), confirmed funds are recorded but the approval
+hold and reservation remain. Resolve the native restriction explicitly; an elapsed deadline is not called a
+quota failure. A separate existing approval requirement stays put.
 Replays do not re-arm a manually resolved hold. Turning the option off does not release existing review holds.
 Native settings remain authoritative; manually shortening an ordinary, still-processing order can defeat its
 finite confirmation hold until the next successful reconciliation.

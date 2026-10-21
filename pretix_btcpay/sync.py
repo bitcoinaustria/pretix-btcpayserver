@@ -450,18 +450,21 @@ def _apply(provider, payment: OrderPayment, invoice: dict, source: str) -> str:
             # only if this payment is not confirmed yet: someone in the backend may have confirmed it meanwhile.
             paid_before = (payments[payment.pk].state != OrderPayment.PAYMENT_STATE_CONFIRMED
                            and order.status == Order.STATUS_PAID and _net_paid(order) >= order.total)
-            review.before_settlement(order, payments, payments[payment.pk])
+            released_review = review.before_settlement(order, payments, payments[payment.pk])
             payment.refresh_from_db()
             payment.order = order
             try:
                 payment.confirm()
             except Quota.QuotaExceededException as e:
+                review.after_settlement(order, payments, released_review)
                 if order.require_approval:
                     return "confirm"  # an unrelated native approval requirement must never be bypassed or called sold out
                 # The payment counts, the order could not be marked paid (seats gone after it expired).
                 logger.warning("BTCPay: payment %s confirmed but order not paid: %s", payment.full_id, e)
                 _update_info(payment, quota_exceeded=True)
                 _note(payment, "quota_exceeded", invoice)
+            else:
+                review.after_settlement(order, payments, released_review)
             if paid_before:
                 # The buyer paid a second invoice of an order another payment had already paid (two tabs, a switched
                 # payment method). The money counts and pretix shows the order as overpaid; someone has to refund

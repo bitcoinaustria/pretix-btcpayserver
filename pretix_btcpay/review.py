@@ -35,27 +35,21 @@ def hold(provider, payment, invoice):
     """True while this exception needs approval; native approval/denial is the operator's resolution action."""
     from .sync import _decimal, _note, _order_rows, _update_info
 
-    info = payment.info_data
-    enabled = getattr(provider, 'manual_review', False)
-    if info.get('review_required'):
-        with _order_rows(payment.order_id) as (order, payments):
-            if order.status not in (Order.STATUS_PENDING, Order.STATUS_EXPIRED) or not order.require_approval:
-                # Native approve/deny or a completed order resolves this group, including already-counted payments.
-                for other in payments.values():
-                    if other.provider == 'btcpay_greenfield' and other.info_data.get('review_required'):
-                        other_info = other.info_data
-                        other_info.pop('held_from', None)
-                        other.info_data = other_info
-                        other.save(update_fields=['info'])
-                        _update_info(other, review_required=False, review_resolved=int(now().timestamp()))
-                payment.refresh_from_db()
-                return False
-    counted = payment.state in (OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED)
-    needed = (enabled and state.needs_manual_review(invoice.get('status'),
-              seen=bool(info.get('seen_at')), paid=_decimal(invoice.get('paidAmount')) > 0))
-    if counted or info.get('review_resolved') or not (needed or info.get('review_required')):
+    if not (getattr(provider, 'manual_review', False) or payment.info_data.get('review_required')):
         return False
     with _order_rows(payment.order_id) as (order, payments):
+        # Resolution and creation share this uninterrupted lock: native approval cannot slip between them.
+        info = payments[payment.pk].info_data
+        if info.get('review_required') and (
+                order.status not in (Order.STATUS_PENDING, Order.STATUS_EXPIRED) or not order.require_approval):
+            resolve(payments)
+            payment.refresh_from_db()
+            return False
+        counted = payments[payment.pk].state in (OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED)
+        needed = (getattr(provider, 'manual_review', False) and state.needs_manual_review(
+            invoice.get('status'), seen=bool(info.get('seen_at')), paid=_decimal(invoice.get('paidAmount')) > 0))
+        if counted or info.get('review_resolved') or not (needed or info.get('review_required')):
+            return False
         if order.status not in (Order.STATUS_PENDING, Order.STATUS_EXPIRED):
             return False  # explicit cancellation is never undone
         if order.status == Order.STATUS_EXPIRED:
@@ -78,18 +72,42 @@ def hold(provider, payment, invoice):
     return True
 
 
+def resolve(payments):
+    """Resolve all review markers under the caller's order/payment locks; retain no obsolete finite hold."""
+    from .sync import PROVIDER, _update_info
+
+    for payment in payments.values():
+        if payment.provider == PROVIDER and payment.info_data.get('review_required'):
+            info = payment.info_data
+            info.pop('held_from', None)
+            payment.info_data = info
+            payment.save(update_fields=['info'])
+            _update_info(payment, review_required=False, review_resolved=int(now().timestamp()))
+
+
 def before_settlement(order, payments, incoming):
-    """Release only our own approval hold when verified settled funds cover the entire current balance."""
-    from .sync import PROVIDER, _net_paid, _update_info
+    """Temporarily lift our own approval flag inside the caller's atomic lock, to attempt settlement."""
+    from .sync import PROVIDER, _net_paid
 
     owned = any(p.provider == PROVIDER and p.info_data.get('review_required')
                 and p.info_data.get('review_approval_owned') for p in payments.values())
     incoming_amount = incoming.amount if incoming.state != OrderPayment.PAYMENT_STATE_CONFIRMED else 0
     if not owned or not order.require_approval or _net_paid(order) + incoming_amount < order.total:
-        return
+        return False
     order.require_approval = False
     order.save(update_fields=['require_approval'])
-    for payment in payments.values():
-        if payment.provider == PROVIDER and payment.info_data.get('review_required'):
-            _update_info(payment, review_required=False, review_resolved=int(now().timestamp()))
-    order.log_action('pretix_btcpay.review_settled')
+    # Temporary within the caller's atomic order lock. Do not resolve markers before confirm() succeeds.
+    return True
+
+
+def after_settlement(order, payments, released):
+    if not released:
+        return
+    order.refresh_from_db(fields=['status'])
+    if order.status == Order.STATUS_PAID:
+        resolve(payments)
+        order.log_action('pretix_btcpay.review_settled')
+    else:
+        # Date policy, quota or another native restriction rejected finalization. Keep recorded money AND quota.
+        order.require_approval = True
+        order.save(update_fields=['require_approval'])

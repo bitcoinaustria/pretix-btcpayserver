@@ -1,11 +1,13 @@
 """Real pretix reservation/expiry paths with synthetic invoices; no network or customer data."""
 import json
-from contextlib import nullcontext
+from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal
+from unittest import skipUnless
 from unittest.mock import patch
 
-from django.test import RequestFactory, TestCase
+from django.db import close_old_connections, connection, transaction
+from django.test import RequestFactory, TestCase, TransactionTestCase
 from django.utils.timezone import now
 from django.utils.translation import override
 from django_scopes import scopes_disabled
@@ -17,13 +19,10 @@ from pretix_btcpay.payment import BTCPayServer
 from pretix_btcpay.signals import review_notice, review_notifications
 
 
-class ManualReviewIntegration(TestCase):
+class ManualReviewFixtures:
     def setUp(self):
         self.enterContext(scopes_disabled())
         self.enterContext(override('en'))
-        # SQLite exercises real pretix transactions and quota semantics. PostgreSQL lock contention is covered by
-        # pretix_regressions; never substitute this fixture for that concurrency suite.
-        self.enterContext(patch('pretix_btcpay.sync.advisory_lock', side_effect=lambda *a, **k: nullcontext()))
         self.enterContext(patch.object(Order, 'send_mail', return_value=None))
         self.enterContext(patch.object(OrderPayment, '_send_paid_mail', return_value=None))
         organizer = Organizer.objects.create(name='Review fixture', slug='review')
@@ -76,6 +75,8 @@ class ManualReviewIntegration(TestCase):
         expire_orders(sender=None)
         order.refresh_from_db()
 
+
+class ManualReviewIntegration(ManualReviewFixtures, TestCase):
     def test_default_off_preserves_existing_behavior(self):
         self.provider.settings.set('manual_review', False)
         order, payment = self.order()
@@ -191,6 +192,23 @@ class ManualReviewIntegration(TestCase):
         self.assertEqual(payment.state, 'confirmed')
         self.assertFalse(payment.info_data.get('quota_exceeded'))
 
+    def test_rejected_settlement_retains_hold_and_recorded_funds(self):
+        order, payment = self.order()
+        self.apply(payment, state.INVALID)
+        # Exercise the exact native date policy in _can_be_paid, not a synthetic exception from confirm().
+        yesterday = now() - timedelta(days=1)
+        self.event.settings.set('payment_term_last', yesterday.date().isoformat())
+        self.apply(payment, state.SETTLED)
+        self.assertEqual(payment.state, 'confirmed')
+        self.assertTrue(payment.order.require_approval)
+        self.assertTrue(payment.info_data['review_required'])
+        self.assertFalse(payment.info_data.get('review_resolved'))
+        self.assertFalse(payment.info_data.get('quota_exceeded'))
+        self.overdue_and_expire(order)
+        self.assertEqual(order.status, Order.STATUS_PENDING)
+        self.assertEqual(self.quota.availability()[1], 0)
+        self.assertFalse(order.ticket_download_available)
+
     def test_pending_warnings_are_deduplicated(self):
         order, payment = self.order()
         self.apply(payment, state.PROCESSING)
@@ -223,3 +241,69 @@ class ManualReviewIntegration(TestCase):
             self.assertIn('Nicht erneut bezahlen', self.provider.payment_pending_render(RequestFactory().get('/'), payment))
         self.apply(payment, state.SETTLED)
         self.assertEqual(review_notice(self.event, payment.order), '')
+
+
+@skipUnless(connection.vendor == 'postgresql', 'Requires PostgreSQL row locks and separate connections')
+class PostgresReviewConcurrency(ManualReviewFixtures, TransactionTestCase):
+    def approve_in_other_connection(self, order_id):
+        close_old_connections()
+        try:
+            with scopes_disabled():
+                approve_order(Order.objects.get(pk=order_id), send_mail=False)
+        finally:
+            connection.close()
+
+    def test_approval_between_review_lock_blocks_is_not_overwritten(self):
+        from concurrent.futures import ThreadPoolExecutor
+        order, payment = self.order()
+        self.apply(payment, state.INVALID)
+        original_rows = sync._order_rows
+        releases = []
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            @contextmanager
+            def approve_after_release(order_id):
+                with original_rows(order_id) as value:
+                    yield value
+                releases.append(order_id)
+                if len(releases) == 1:
+                    executor.submit(self.approve_in_other_connection, order_id).result(timeout=10)
+
+            with patch('pretix_btcpay.sync._order_rows', approve_after_release):
+                self.apply(payment, state.INVALID)
+        payment.order.refresh_from_db()
+        self.assertFalse(payment.order.require_approval, 'A replay overwrote a committed native approval')
+        self.apply(payment, state.INVALID)
+        self.assertFalse(payment.order.require_approval)
+        self.assertFalse(payment.info_data['review_required'])
+
+    def test_operator_row_lock_causes_retry_then_preserves_approval(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event as ThreadEvent
+        order, payment = self.order()
+        self.apply(payment, state.INVALID)
+        ready, release = ThreadEvent(), ThreadEvent()
+
+        def operator():
+            close_old_connections()
+            try:
+                with scopes_disabled(), transaction.atomic():
+                    locked = Order.objects.select_for_update().get(pk=order.pk)
+                    approve_order(locked, send_mail=False)
+                    ready.set()
+                    if not release.wait(10):
+                        raise AssertionError('Operator release timed out')
+            finally:
+                connection.close()
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(operator)
+            try:
+                self.assertTrue(ready.wait(10))
+                with self.assertRaises(sync.OrderBusy):
+                    self.apply(payment, state.INVALID)
+            finally:
+                release.set()
+            future.result(timeout=10)
+        self.apply(payment, state.INVALID)
+        self.assertFalse(payment.order.require_approval)
+        self.assertFalse(payment.info_data['review_required'])
