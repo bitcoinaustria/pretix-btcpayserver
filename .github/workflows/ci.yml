@@ -51,9 +51,35 @@ jobs:
           name: dist
           path: dist/
 
+  subsidy:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pretix: ["2026.7.0", "2026.8.0"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: Check subsidy through pretix orders and invoices
+        run: |
+          docker run --rm --network none --memory 1536m --cpus 2 --tmpfs /data:rw,mode=1777 \
+            -u root -v "$PWD:/plugin:ro" -w /tmp \
+            -e DATA_DIR=/data -e DJANGO_SETTINGS_MODULE=tests.pretix_test_settings \
+            --entrypoint sh pretix/standalone:${{ matrix.pretix }} -ec '
+              pip3 install --no-cache-dir --no-deps /plugin/dist/*.whl
+              # Import the installed wheel, not the source package from the checkout.
+              mkdir /tmp/test-runner
+              cp -r /plugin/tests /tmp/test-runner/tests
+              cd /tmp/test-runner
+              python3 -m django test tests.pretix_subsidy --noinput
+            '
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, subsidy]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -13,6 +13,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 REQUIRED = [
+    "pretix_btcpay/pricing.py",
+    "pretix_btcpay/templates/pretix_btcpay/checkout_payment_form.html",
     "pretix_btcpay/templates/pretix_btcpay/pending.html",
     "pretix_btcpay/locale/de/LC_MESSAGES/django.mo",
     "pretix_btcpay/locale/de_Informal/LC_MESSAGES/django.mo",

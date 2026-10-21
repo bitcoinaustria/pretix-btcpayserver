@@ -11,7 +11,7 @@ has since been rewritten; see [Changes from the original plugin](#changes-from-t
 
 ## Requirements
 
-- pretix 2026.7 (tested), Python ≥ 3.11
+- pretix 2026.7 and 2026.8 (tested), Python ≥ 3.11
 - BTCPay Server 2.x (tested with 2.3.9) with a store that has an on-chain wallet and, optionally, Lightning
 - `pretix cron` running regularly (every few minutes), as pretix recommends anyway
 - PostgreSQL, as pretix recommends for production, and no pgbouncer in transaction mode in front of it: work on an
@@ -26,7 +26,7 @@ built and installed into pretix 2026.7.0 by CI from the tagged commit. The plugi
 installs the same way; pin the release or commit you deploy.
 
 ```bash
-python -m pip install https://github.com/bitcoinaustria/pretix-btcpayserver/releases/download/v0.2.0/pretix_btcpayserver-0.2.0-py3-none-any.whl
+python -m pip install https://github.com/bitcoinaustria/pretix-btcpayserver/releases/download/v0.3.0/pretix_btcpayserver-0.3.0-py3-none-any.whl
 python -m pretix migrate
 python -m pretix rebuild
 # Restart your pretix web and worker services, then enable the plugin for the event.
@@ -66,6 +66,32 @@ existing payment integration: older invoices are not migrated automatically.
    separately if enabled; it settles immediately. Check webhook deliveries and a successful fallback poll before sales.
 
 ## How payments work
+
+### Organizer-funded Bitcoin discount
+
+Set **Organizer-funded Bitcoin discount (%)** in the event's BTCPay payment settings to offer a percentage
+discount for choosing Bitcoin, including Lightning. Leave it empty or at 0 to keep existing pricing unchanged;
+the supported range is 0–99.99%, with two decimal places. No voucher code is needed.
+
+The percentage applies to the remaining gross amount payable with this method, after product discounts and
+vouchers and before payment fees. For example, 5% off €100 means €95 payable with zero payment fees.
+Configured payment fees are calculated as before and the subsidy is deducted from them. pretix records the net
+adjustment as a payment fee (which can be negative), includes it in its order total, invoice and tax calculation,
+and sends the resulting payment amount to BTCPay. Switching to another payment method recalculates the adjustment
+through pretix. Rounding keeps at least one smallest currency unit payable, e.g. €0.01 for EUR.
+A floor of up to three smallest currency units is kept before tax rounding to preserve a positive payment
+afterwards, including for existing orders with a different rounding mode. Very small balances can therefore
+receive a smaller discount.
+
+Configure pretix's payment-fee tax rule for the event before using the subsidy. An automatic product discount and
+this payment discount combine: do not enable both unintentionally. The setting does not retroactively change
+existing payments or BTCPay invoices. A payment-method change or order edit may recalculate open payment fees
+using the current settings. The buyer's checkout shows the discount percentage; pretix uses its standard
+**Payment fee** label for the resulting adjustment on the order and invoice.
+pretix's minimum/maximum order-total restrictions may be checked before this adjustment; they are not a cap on
+the discounted BTCPay invoice amount.
+
+### Invoice status
 
 | BTCPay invoice | pretix payment | order |
 |---|---|---|
@@ -189,6 +215,9 @@ Accepted for the Bitcoin Zitadelle, and worth knowing before you rely on the plu
 ```bash
 python -m unittest discover -s tests -t .                  # the state machine and the security checks, without pretix
 python -m build && python tools/check_dist.py dist          # the release files, as CI builds them
+# Inside an official pretix image with this checkout at /plugin (no network or existing data needed):
+# DATA_DIR=/data PYTHONPATH=/plugin:/pretix/src DJANGO_SETTINGS_MODULE=tests.pretix_test_settings \
+#   python -m django test tests.pretix_subsidy --noinput
 docker exec -i <pretix container> pretix shell < tests/pretix_checks.py   # sync against a real pretix, fake invoices
 docker exec -i -e CHECK_EVENT=<organizer>/<test-event> <pretix container> pretix shell < tests/pretix_regressions.py
 docker exec -i -e CHECK_EVENT=<organizer>/<test-event> <pretix container> pretix shell < tests/pretix_surface.py
@@ -221,7 +250,7 @@ website repository (`scripts/pretix-e2e-bitcoin.mjs`, run with `PRETIX_BTCPAY=gr
 ## Releases
 
 Set the new version in `setup.py` and `pretix_btcpay/__init__.py`, merge to `main`, then tag that commit and push the
-tag (`git tag v0.2.0 && git push origin v0.2.0`). CI runs the tests, builds the wheel and sdist, checks that the
+tag (`git tag v0.3.0 && git push origin v0.3.0`). CI runs the tests, builds the wheel and sdist, checks that the
 version matches the tag and that templates and translations are inside, installs the wheel into pretix 2026.7.0 and
 publishes both files as a GitHub release. Run the live checks above and the end-to-end tests before tagging.
 

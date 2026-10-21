@@ -3,6 +3,7 @@ import json
 import logging
 import secrets
 from collections import OrderedDict
+from decimal import Decimal
 from urllib.parse import urlparse
 
 from django import forms
@@ -26,6 +27,7 @@ from pretix.multidomain.urlreverse import eventreverse, eventreverse_absolute
 from . import state
 from .api import BTCPayAPI, BTCPayError, WEBHOOK_EVENTS, is_own_link, missing_permissions
 from .locks import WEBHOOK, Busy, advisory_lock, hold_connection
+from .pricing import subsidized_fee
 from .sync import PROVIDER, OrderBusy, event_ref, invoice_origin, is_surplus, same_origin, still_open, sync_payment
 
 logger = logging.getLogger(__name__)
@@ -77,6 +79,20 @@ class BTCPayServer(BasePaymentProvider):
         if not self.configured:
             return _("You have not yet configured your BTCPay Server URL, API key or store ID.")
         return None
+
+    def calculate_fee(self, price):
+        # Keep the adjustment in pretix's payment fee: checkout, invoices, method changes and
+        # BTCPay must all use the same reduced balance, not just a cheaper BTCPay invoice.
+        return subsidized_fee(
+            price, super().calculate_fee(price),
+            self.subsidy_percent,
+            settings.CURRENCY_PLACES.get(self.event.currency, 2),
+        )
+
+    @property
+    def subsidy_percent(self):
+        # Optional settings can be stored as an empty string; casting that directly to Decimal fails.
+        return Decimal(self.settings.get("subsidy_percent", default="0") or "0")
 
     @cached_property
     def client(self) -> BTCPayAPI:
@@ -226,6 +242,15 @@ class BTCPayServer(BasePaymentProvider):
                 help_text=_("The name of the payment method that is shown to your customers during checkout."),
                 required=False,
             )),
+            ("subsidy_percent", forms.DecimalField(
+                label=_("Organizer-funded Bitcoin discount (%)"),
+                help_text=_("Optional discount for Bitcoin payments, including Lightning. Applied to the amount "
+                            "payable with this payment method after product discounts and vouchers, before payment "
+                            "fees. 0 or empty disables it. Any configured payment fees still apply. Rounding will "
+                            "leave at least one smallest currency unit payable."),
+                min_value=Decimal("0"), max_value=Decimal("99.99"), decimal_places=2,
+                localize=True, required=False,
+            )),
         ] + list(super().settings_form_fields.items()))
         d.move_to_end("public_name", last=False)
         d.move_to_end("_enabled", last=False)
@@ -307,7 +332,10 @@ class BTCPayServer(BasePaymentProvider):
     # Checkout
 
     def payment_form_render(self, request, total=None) -> str:
-        return get_template("pretix_btcpay/checkout_payment_form.html").render({"request": request, "event": self.event})
+        return get_template("pretix_btcpay/checkout_payment_form.html").render({
+            "request": request, "event": self.event,
+            "subsidy_percent": self.subsidy_percent,
+        })
 
     def checkout_confirm_render(self, request, order=None, info_data=None) -> str:
         return get_template("pretix_btcpay/checkout_payment_confirm.html").render({"request": request, "event": self.event})

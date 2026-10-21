@@ -2,3 +2,8 @@
 <p>{% blocktrans trimmed %}
     You pay in Bitcoin, over the Lightning Network or on-chain. After you submit your order, you are taken to the payment page.
 {% endblocktrans %}</p>
+{% if subsidy_percent %}
+<p>{% blocktrans trimmed with percent=subsidy_percent|floatformat:"-2" %}
+    The organizer gives you a {{ percent }}% discount for paying with Bitcoin, including Lightning. The discount is included in your total; any configured payment fees still apply.
+{% endblocktrans %}</p>
+{% endif %}
