@@ -109,6 +109,10 @@ T = [
   "Nach dem Bestellen kommst du zur Zahlungsseite; dort zahlst du über das Lightning Network oder on-chain. Bezahlt ist deine Bestellung, sobald die Zahlung bestätigt ist."),
 ]
 T += [
+ ("BTCPay: manual review required", "BTCPay: manuelle Prüfung erforderlich", None),
+ ("BTCPay: unconfirmed for 2 hours", "BTCPay: seit 2 Stunden unbestätigt", None),
+ ("BTCPay: unconfirmed for 24 hours", "BTCPay: seit 24 Stunden unbestätigt", None),
+ ("BTCPay: reservation failed", "BTCPay: Reservierung fehlgeschlagen", None),
  ("Hold received payments for manual review", "Eingegangene Zahlungen zur manuellen Prüfung reserviert halten", None),
  ("If an invoice with detected funds expires or becomes invalid, keep its order pending approval. Unpaid orders still expire normally. Subscribe to BTCPay payment warnings in your notification settings. Turning this off does not release existing holds.", "Läuft eine Rechnung mit erkanntem Geldeingang ab oder wird sie ungültig, bleibt die Bestellung bis zur Freigabe reserviert. Ohne Geldeingang läuft sie normal ab. BTCPay-Zahlungswarnungen in den Benachrichtigungseinstellungen abonnieren. Ausschalten gibt bestehende Reservierungen nicht frei.", None),
  ("Payment requires manual review. The order remains reserved pending approval.", "Zahlung manuell prüfen. Die Bestellung bleibt bis zur Freigabe reserviert.", None),

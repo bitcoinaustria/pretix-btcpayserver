@@ -347,3 +347,15 @@ msgstr "Zahlung wird geprüft. Plätze bleiben reserviert. Transaktion vor Freig
 
 msgid "Payment detected. Waiting for confirmation by the Bitcoin network. Your order remains reserved until its payment deadline."
 msgstr "Zahlung erkannt. Bestätigung im Bitcoin-Netz ausstehend. Deine Bestellung bleibt bis zur Zahlungsfrist reserviert."
+
+msgid "BTCPay: manual review required"
+msgstr "BTCPay: manuelle Prüfung erforderlich"
+
+msgid "BTCPay: unconfirmed for 2 hours"
+msgstr "BTCPay: seit 2 Stunden unbestätigt"
+
+msgid "BTCPay: unconfirmed for 24 hours"
+msgstr "BTCPay: seit 24 Stunden unbestätigt"
+
+msgid "BTCPay: reservation failed"
+msgstr "BTCPay: Reservierung fehlgeschlagen"

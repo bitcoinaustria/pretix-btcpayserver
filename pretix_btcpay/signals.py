@@ -77,9 +77,9 @@ def review_notifications(sender, **kwargs):
         required_permission = "event.orders:read"
         verbose_name = _("BTCPay payment warnings")
 
-        def __init__(self, event, action, title):
+        def __init__(self, event, action, label, title):
             super().__init__(event)
-            self.action_type, self.title = action, title
+            self.action_type, self.verbose_name, self.title = action, label, title
 
         def build_notification(self, logentry):
             order = logentry.content_object
@@ -89,11 +89,11 @@ def review_notifications(sender, **kwargs):
             notification.add_action(_("View order"), url)
             return notification
 
-    return [PaymentWarning(sender, 'pretix_btcpay.' + action, title) for action, title in (
-        ('manual_review', _("Order {code}: payment requires manual review.")),
-        ('confirmation_delayed_2h', _("Order {code}: payment unconfirmed for 2 hours.")),
-        ('confirmation_delayed_24h', _("Order {code}: payment unconfirmed for 24 hours.")),
-        ('hold_failed', _("Order {code}: payment reservation could not be kept.")),
+    return [PaymentWarning(sender, 'pretix_btcpay.' + action, label, title) for action, label, title in (
+        ('manual_review', _("BTCPay: manual review required"), _("Order {code}: payment requires manual review.")),
+        ('confirmation_delayed_2h', _("BTCPay: unconfirmed for 2 hours"), _("Order {code}: payment unconfirmed for 2 hours.")),
+        ('confirmation_delayed_24h', _("BTCPay: unconfirmed for 24 hours"), _("Order {code}: payment unconfirmed for 24 hours.")),
+        ('hold_failed', _("BTCPay: reservation failed"), _("Order {code}: payment reservation could not be kept.")),
     )]
 
 
