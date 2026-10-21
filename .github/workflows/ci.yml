@@ -89,8 +89,9 @@ jobs:
         env:
           POSTGRES_DB: review_fixture
           POSTGRES_USER: review_fixture
-          POSTGRES_PASSWORD: synthetic-ci-only
-        ports: ["5432:5432"]
+          # Disposable runner-only database. No reusable credentials; reachable only over runner loopback.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["127.0.0.1:5432:5432"]
         options: >-
           --health-cmd "pg_isready -U review_fixture"
           --health-interval 5s --health-timeout 5s --health-retries 10

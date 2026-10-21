@@ -6,7 +6,7 @@ from pretix.settings import *  # noqa: F403
 DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}
 if os.environ.get('PRETIX_REVIEW_POSTGRES') == '1':
     DATABASES = {"default": {"ENGINE": "django.db.backends.postgresql", "NAME": "review_fixture",
-                             "USER": "review_fixture", "PASSWORD": "synthetic-ci-only",
+                             "USER": "review_fixture",
                              "HOST": "127.0.0.1", "PORT": "5432"}}
 CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
