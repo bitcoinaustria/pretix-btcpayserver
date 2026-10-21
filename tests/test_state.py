@@ -86,6 +86,18 @@ class DecideTest(unittest.TestCase):
             self.assertEqual(decide(None, None, s).action, "none")
 
 
+class ReviewTest(unittest.TestCase):
+    def test_money_on_closed_invoices_requires_review(self):
+        for status in ("Expired", "Invalid"):
+            self.assertFalse(state.needs_manual_review(status, seen=False, paid=False))
+            self.assertTrue(state.needs_manual_review(status, seen=True, paid=False))
+            self.assertTrue(state.needs_manual_review(status, seen=False, paid=True))
+
+    def test_other_statuses_do_not_enter_manual_review(self):
+        for status in ("New", "Processing", "Settled", "unknown", None):
+            self.assertFalse(state.needs_manual_review(status, seen=True, paid=True))
+
+
 class TimesTest(unittest.TestCase):
     def test_invoice_minutes(self):
         self.assertEqual(state.invoice_minutes(NOW + timedelta(minutes=30), NOW, 15), 15)

@@ -90,6 +90,10 @@ class BTCPayServer(BasePaymentProvider):
         )
 
     @property
+    def manual_review(self):
+        return self.settings.get("manual_review", as_type=bool, default=False)
+
+    @property
     def subsidy_percent(self):
         # Optional settings can be stored as an empty string; casting that directly to Decimal fails.
         return Decimal(self.settings.get("subsidy_percent", default="0") or "0")
@@ -227,6 +231,13 @@ class BTCPayServer(BasePaymentProvider):
                 help_text=_("An invoice never runs longer than the payment deadline of its order, and not longer "
                             "than this. The exchange rate is fixed for as long as the invoice runs."),
                 min_value=1, max_value=1440, initial=15, required=False,
+            )),
+            ("manual_review", forms.BooleanField(
+                label=_("Hold received payments for manual review"),
+                help_text=_("If an invoice with detected funds expires or becomes invalid, keep its order pending approval. "
+                            "Unpaid orders still expire normally. Subscribe to BTCPay payment warnings in your notification "
+                            "settings. Turning this off does not release existing holds."),
+                initial=False, required=False,
             )),
             ("refunds", forms.BooleanField(
                 label=_("Create refunds in BTCPay"),
@@ -445,6 +456,9 @@ class BTCPayServer(BasePaymentProvider):
                                      "if this problem persists."))
 
     def payment_pending_render(self, request, payment: OrderPayment) -> str:
+        from .review import active
+        if active(payment):
+            return get_template("pretix_btcpay/review_notice.html").render({})
         info = payment.info_data
         if payment.state == OrderPayment.PAYMENT_STATE_CREATED:
             pay_url = self._pay_url(payment)  # pretix' own page, which creates the invoice on demand

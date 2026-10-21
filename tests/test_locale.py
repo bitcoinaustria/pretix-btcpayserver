@@ -5,6 +5,12 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / 'pretix_btcpay' / 'locale'
+REVIEW = (
+    'Hold received payments for manual review',
+    'Payment under review. Your places remain reserved. Do not pay again.',
+    'Order {code}: payment requires manual review.',
+    'Payment detected. Waiting for confirmation by the Bitcoin network. Your order remains reserved until its payment deadline.',
+)
 RECOVERY = (
     'Complete payment',
     'Your payment has arrived, but not the full amount yet — it may have been replaced with a cheaper transaction. '
@@ -51,6 +57,13 @@ class LocaleTest(unittest.TestCase):
             for message in RECOVERY:
                 with self.subTest(locale=locale, message=message):
                     self.assertNotEqual(translations.gettext(message), message)
+
+    def test_manual_review_instructions_are_translated(self):
+        for locale in ('de', 'de_Informal'):
+            with (ROOT / locale / 'LC_MESSAGES' / 'django.mo').open('rb') as source:
+                translations = gettext.GNUTranslations(source)
+            for message in REVIEW:
+                self.assertNotEqual(translations.gettext(message), message)
 
     def test_compiled_catalogs_match_sources(self):
         for locale in ('de', 'de_Informal'):

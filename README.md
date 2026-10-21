@@ -91,6 +91,37 @@ using the current settings. The buyer's checkout shows the discount percentage; 
 pretix's minimum/maximum order-total restrictions may be checked before this adjustment; they are not a cap on
 the discounted BTCPay invoice amount.
 
+### Manual review of received payments
+
+Enable **Hold received payments for manual review** per event to prevent automatic release of a problem order
+once BTCPay has reported money. The default is off, preserving existing events. With it on:
+
+- No detected funds: normal order expiry still applies.
+- Full unconfirmed payment: the existing confirmation hold applies and settlement pays the order automatically.
+- Partial payment: extend the ordinary deadline through monitoring plus one hour, allowing the buyer to finish
+  the same invoice. Do not confirm or issue a paid ticket for a partial transfer.
+- `Expired` or `Invalid`, with current or previously observed funds: use pretix's **pending approval** state to
+  keep the original order and quota reserved until the team decides. No separate inventory, forced quota,
+  unpaid ticket validity, new spending permission or automatic CPFP is involved.
+
+The team sees a follow-up due today and **Payment under review** in the order's payment details. Use the native
+**Approve** action only after deciding how to finish the payment; this ends the manual hold, starts pretix's normal
+payment deadline, and is not payment confirmation. Use **Deny** after resolving any received funds if the order
+will not be fulfilled. A later invoice replay cannot re-arm an approved hold or reopen a denied order. Confirmed
+funds covering the full current order total automatically release an approval hold created by this plugin and pay
+the order. Approval requirements that existed beforehand are never removed automatically.
+
+Subscribe to the plugin's **BTCPay payment warnings** in pretix's user notification preferences: warnings are
+registered for 2 and 24 hours without settlement, entry into manual review, and a failed quota hold. Select email
+and verify SMTP delivery. No email recipient is subscribed automatically. Each warning is logged once per payment;
+cron cadence and queue delay determine actual delivery. These are review reminders, not cancellation timers.
+Warnings link to the protected backend and include no buyer names, email addresses, transaction details or order secrets.
+
+Switching the option off does not release existing review holds. They stay in reconciliation beyond the usual
+180-day window until resolved. If an order already expired and its places have been resold before receipt was
+observed, the plugin cannot promise a reservation: it reports **hold failed** and does not overbook. Missed webhooks
+and a failed reconciliation service cannot protect funds they have not observed; keep both operational.
+
 ### Invoice status
 
 | BTCPay invoice | pretix payment | order |

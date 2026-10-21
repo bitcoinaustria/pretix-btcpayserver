@@ -108,13 +108,49 @@ T = [
   "Nach dem Bestellen kommen Sie zur Zahlungsseite; dort zahlen Sie über das Lightning Network oder on-chain. Bezahlt ist Ihre Bestellung, sobald die Zahlung bestätigt ist.",
   "Nach dem Bestellen kommst du zur Zahlungsseite; dort zahlst du über das Lightning Network oder on-chain. Bezahlt ist deine Bestellung, sobald die Zahlung bestätigt ist."),
 ]
+T += [
+ ("Hold received payments for manual review", "Eingegangene Zahlungen zur manuellen Prüfung reserviert halten", None),
+ ("If an invoice with detected funds expires or becomes invalid, keep its order pending approval. Unpaid orders still expire normally. Subscribe to BTCPay payment warnings in your notification settings. Turning this off does not release existing holds.", "Läuft eine Rechnung mit erkanntem Geldeingang ab oder wird sie ungültig, bleibt die Bestellung bis zur Freigabe reserviert. Ohne Geldeingang läuft sie normal ab. BTCPay-Zahlungswarnungen in den Benachrichtigungseinstellungen abonnieren. Ausschalten gibt bestehende Reservierungen nicht frei.", None),
+ ("Payment requires manual review. The order remains reserved pending approval.", "Zahlung manuell prüfen. Die Bestellung bleibt bis zur Freigabe reserviert.", None),
+ ("Confirmed funds cover the order. The payment review hold was released.", "Die bestätigte Zahlung deckt die Bestellung. Die manuelle Prüfung wurde aufgehoben.", None),
+ ("Payment is still unconfirmed after 2 hours.", "Zahlung nach 2 Stunden noch unbestätigt.", None),
+ ("Payment is still unconfirmed after 24 hours.", "Zahlung nach 24 Stunden noch unbestätigt.", None),
+ ("BTCPay payment warnings", "BTCPay-Zahlungswarnungen", None),
+ ("Order {code}: payment requires manual review.", "Bestellung {code}: Zahlung manuell prüfen.", None),
+ ("Order {code}: payment unconfirmed for 2 hours.", "Bestellung {code}: Zahlung seit 2 Stunden unbestätigt.", None),
+ ("Order {code}: payment unconfirmed for 24 hours.", "Bestellung {code}: Zahlung seit 24 Stunden unbestätigt.", None),
+ ("Order {code}: payment reservation could not be kept.", "Bestellung {code}: Reservierung zur Zahlung konnte nicht gehalten werden.", None),
+ ("View order", "Bestellung ansehen", None),
+ ("Payment under review. Your places remain reserved. Do not pay again.", "Zahlung wird geprüft. Ihre Plätze bleiben reserviert. Nicht erneut bezahlen.", "Zahlung wird geprüft. Deine Plätze bleiben reserviert. Nicht erneut bezahlen."),
+ ("Payment under review. Places remain reserved. Check the transaction before approving or denying this order.", "Zahlung wird geprüft. Plätze bleiben reserviert. Transaktion vor Freigabe oder Ablehnung dieser Bestellung prüfen.", None),
+ ("Payment detected. Waiting for confirmation by the Bitcoin network. Your order remains reserved until its payment deadline.", "Zahlung erkannt. Bestätigung im Bitcoin-Netz ausstehend. Ihre Bestellung bleibt bis zur Zahlungsfrist reserviert.", "Zahlung erkannt. Bestätigung im Bitcoin-Netz ausstehend. Deine Bestellung bleibt bis zur Zahlungsfrist reserviert."),
+]
+
+def existing(path):
+    import ast
+    values, entry, field = {}, {}, None
+    for line in path.read_text().splitlines() + ['']:
+        if line.startswith(('msgid ', 'msgstr ')):
+            field, value = line.split(' ', 1)
+            entry[field] = ast.literal_eval(value)
+        elif line.startswith('"'):
+            entry[field] += ast.literal_eval(line)
+        elif not line.strip() and entry:
+            if entry.get('msgid'):
+                values[entry['msgid']] = entry.get('msgstr', '')
+            entry, field = {}, None
+    return values
+
+
 def esc(s): return s.replace('\\','\\\\').replace('"','\\"')
 for lang, idx in (("de", 1), ("de_Informal", 2)):
     out = ['msgid ""', 'msgstr ""', '"Project-Id-Version: pretix-btcpayserver\\n"', '"MIME-Version: 1.0\\n"',
            '"Content-Type: text/plain; charset=UTF-8\\n"', '"Content-Transfer-Encoding: 8bit\\n"', f'"Language: {lang}\\n"', '']
+    # Preserve translations added since this hand-maintained source table was written.
+    entries = existing(__import__('pathlib').Path(f"pretix_btcpay/locale/{lang}/LC_MESSAGES/django.po"))
     for row in T:
-        msg = row[idx] if idx == 1 or row[2] is None else row[2]
-        if idx == 2 and row[2] is None: msg = row[1]
-        out += [f'msgid "{esc(row[0])}"', f'msgstr "{esc(msg)}"', '']
+        entries[row[0]] = row[1] if idx == 1 or row[2] is None else row[2]
+    for message, translated in entries.items():
+        out += [f'msgid "{esc(message)}"', f'msgstr "{esc(translated)}"', '']
     open(f"pretix_btcpay/locale/{lang}/LC_MESSAGES/django.po", "w").write("\n".join(out))
 print(len(T), "Einträge")

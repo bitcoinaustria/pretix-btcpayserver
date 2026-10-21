@@ -63,7 +63,7 @@ jobs:
         with:
           name: dist
           path: dist
-      - name: Check subsidy through pretix orders and invoices
+      - name: Check pricing and manual review through pretix orders and invoices
         run: |
           docker run --rm --network none --memory 1536m --cpus 2 --tmpfs /data:rw,mode=1777 \
             -u root -v "$PWD:/plugin:ro" -w /tmp \
@@ -74,7 +74,7 @@ jobs:
               mkdir /tmp/test-runner
               cp -r /plugin/tests /tmp/test-runner/tests
               cd /tmp/test-runner
-              python3 -m django test tests.pretix_subsidy --noinput
+              python3 -m django test tests.pretix_subsidy tests.pretix_review --noinput
             '
 
   release:
