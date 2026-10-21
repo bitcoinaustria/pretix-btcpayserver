@@ -106,6 +106,7 @@ jobs:
           docker run --rm --network host --memory 1536m --cpus 2 --tmpfs /data:rw,mode=1777 \
             -u root -v "$PWD:/plugin:ro" -w /tmp \
             -e DATA_DIR=/data -e PRETIX_REVIEW_POSTGRES=1 \
+            -e PRETIX_DIRTY_TRANSACTIONS_QUIET=false \
             -e DJANGO_SETTINGS_MODULE=tests.pretix_test_settings \
             --entrypoint sh pretix/standalone:${{ matrix.pretix }} -ec '
               pip3 install --no-cache-dir --no-deps /plugin/dist/*.whl

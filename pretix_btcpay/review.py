@@ -61,6 +61,7 @@ def hold(provider, payment, invoice):
         if not order.require_approval:
             order.require_approval = True
             order.save(update_fields=['require_approval'])
+            order.create_transactions()  # Native approval holds also change pretix's accounting ledger.
             _update_info(payment, review_approval_owned=True)
         today = now().astimezone(order.event.timezone).date()
         if order.custom_followup_at is None or order.custom_followup_at > today:
@@ -111,3 +112,4 @@ def after_settlement(order, payments, released):
         # Date policy, quota or another native restriction rejected finalization. Keep recorded money AND quota.
         order.require_approval = True
         order.save(update_fields=['require_approval'])
+        order.create_transactions()

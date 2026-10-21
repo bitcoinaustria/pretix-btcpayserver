@@ -94,6 +94,17 @@ class ManualReviewIntegration(ManualReviewFixtures, TestCase):
         self.assertFalse(order.require_approval)
         self.assertEqual(payment.state, 'failed')
 
+    def test_review_ledger_stays_consistent_through_native_approval_and_settlement(self):
+        order, payment = self.order()
+        self.apply(payment, state.INVALID)
+        self.assertEqual(payment.order.create_transactions(save=False), [])
+        approve_order(payment.order, send_mail=False)
+        self.apply(payment, state.INVALID)
+        self.assertEqual(payment.order.create_transactions(save=False), [])
+        self.apply(payment, state.SETTLED)
+        self.assertEqual(payment.order.status, Order.STATUS_PAID)
+        self.assertEqual(payment.order.create_transactions(save=False), [])
+
     def test_processing_uses_normal_hold_and_confirms_automatically(self):
         order, payment = self.order()
         self.apply(payment, state.PROCESSING)
@@ -205,6 +216,7 @@ class ManualReviewIntegration(ManualReviewFixtures, TestCase):
         order, payment = self.order()
         order.require_approval = True
         order.save(update_fields=['require_approval'])
+        order.create_transactions()
         self.apply(payment, state.INVALID)
         self.assertFalse(payment.info_data.get('review_approval_owned'))
         self.apply(payment, state.SETTLED)
@@ -226,6 +238,7 @@ class ManualReviewIntegration(ManualReviewFixtures, TestCase):
         self.assertFalse(payment.info_data.get('review_resolved'))
         self.assertFalse(payment.info_data.get('quota_exceeded'))
         self.overdue_and_expire(order)
+        self.assertEqual(order.create_transactions(save=False), [])
         self.assertEqual(order.status, Order.STATUS_PENDING)
         self.assertEqual(self.quota.availability()[1], 0)
         self.assertFalse(order.ticket_download_available)
