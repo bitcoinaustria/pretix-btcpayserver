@@ -11,7 +11,7 @@ has since been rewritten; see [Changes from the original plugin](#changes-from-t
 
 ## Requirements
 
-- pretix 2026.7 (tested), Python ≥ 3.11
+- pretix 2026.7 and 2026.8 (tested), Python ≥ 3.11
 - BTCPay Server 2.x (tested with 2.3.9) with a store that has an on-chain wallet and, optionally, Lightning
 - `pretix cron` running regularly (every few minutes), as pretix recommends anyway
 - PostgreSQL, as pretix recommends for production, and no pgbouncer in transaction mode in front of it: work on an
@@ -26,7 +26,7 @@ built and installed into pretix 2026.7.0 by CI from the tagged commit. The plugi
 installs the same way; pin the release or commit you deploy.
 
 ```bash
-python -m pip install https://github.com/bitcoinaustria/pretix-btcpayserver/releases/download/v0.2.0/pretix_btcpayserver-0.2.0-py3-none-any.whl
+python -m pip install https://github.com/bitcoinaustria/pretix-btcpayserver/releases/download/v0.3.0/pretix_btcpayserver-0.3.0-py3-none-any.whl
 python -m pretix migrate
 python -m pretix rebuild
 # Restart your pretix web and worker services, then enable the plugin for the event.
@@ -250,7 +250,7 @@ website repository (`scripts/pretix-e2e-bitcoin.mjs`, run with `PRETIX_BTCPAY=gr
 ## Releases
 
 Set the new version in `setup.py` and `pretix_btcpay/__init__.py`, merge to `main`, then tag that commit and push the
-tag (`git tag v0.2.0 && git push origin v0.2.0`). CI runs the tests, builds the wheel and sdist, checks that the
+tag (`git tag v0.3.0 && git push origin v0.3.0`). CI runs the tests, builds the wheel and sdist, checks that the
 version matches the tag and that templates and translations are inside, installs the wheel into pretix 2026.7.0 and
 publishes both files as a GitHub release. Run the live checks above and the end-to-end tests before tagging.
 

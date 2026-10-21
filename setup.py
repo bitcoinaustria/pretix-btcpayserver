@@ -2,7 +2,7 @@ from setuptools import find_namespace_packages, setup
 
 setup(
     name="pretix-btcpayserver",
-    version="0.2.0",
+    version="0.3.0",
     description="Accept Bitcoin payments in pretix via the BTCPay Server Greenfield API",
     long_description="""# pretix BTCPay Server
 
